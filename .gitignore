@@ -1,0 +1,62 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.env
+*.secrets
+*.secret
+*.credentials
+*credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+
+# IDE and editor files
+.vscode/
+.idea/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs and runtime temp files
+logs/
+*.log
+*.tmp
+*.temp
+
+# Generated datasets and reports
+reports/
+data/*.csv
+data/**/*.csv
+
+# Local databases and large binary artifacts
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+*.feather
+*.h5
+*.hdf5
