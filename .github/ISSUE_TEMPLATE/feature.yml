@@ -1,0 +1,58 @@
+name: Feature Request
+description: Propose a practical enhancement for MarketScalping.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: input
+    id: feature_title
+    attributes:
+      label: Feature title
+      placeholder: Short, specific feature name
+    validations:
+      required: true
+  - type: textarea
+    id: problem_objective
+    attributes:
+      label: Problem / objective
+      description: What problem are you solving, or what objective should be met?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed solution
+      description: Describe the implementation idea at a high level.
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected behavior
+      description: What should happen when this feature is complete?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: List clear pass/fail criteria.
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+    validations:
+      required: true
+  - type: textarea
+    id: testing_approach
+    attributes:
+      label: Testing approach
+      description: How will this be tested (unit/integration/replay/manual)?
+    validations:
+      required: true
+  - type: textarea
+    id: trading_risk_impact
+    attributes:
+      label: Trading/risk impact
+      description: Describe impact on trading decisions, risk controls, or capital safety.
+    validations:
+      required: true

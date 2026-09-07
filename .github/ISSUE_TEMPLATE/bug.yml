@@ -1,0 +1,74 @@
+name: Bug Report
+description: Report a defect affecting behavior, safety, or reliability.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: bug_description
+    attributes:
+      label: Bug description
+      description: What is the defect?
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual_behavior
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction_steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Go to ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, branch/commit, and runtime context.
+    validations:
+      required: true
+  - type: textarea
+    id: logs_evidence
+    attributes:
+      label: Logs/evidence
+      description: Paste logs, stack traces, screenshots, or report excerpts.
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Critical
+        - High
+        - Medium
+        - Low
+    validations:
+      required: true
+  - type: textarea
+    id: trading_risk_impact
+    attributes:
+      label: Trading/risk impact
+      description: Describe impact on execution quality, risk limits, or capital safety.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_regression_test
+    attributes:
+      label: Proposed test/regression test
+      description: What automated or manual test should prevent this from recurring?
+    validations:
+      required: true
