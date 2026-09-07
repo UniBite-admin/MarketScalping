@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Architect Agent V1 Contract",
+  "type": "object",
+  "description": "Contract describing the inputs and outputs for the Architect / Technical Lead Agent (V1).",
+  "properties": {
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "task_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "repository_revision": { "type": "string", "description": "commit SHA or revision id" },
+        "task_spec": { "type": "object", "description": "original task specification provided by Orchestrator" },
+        "repository_context": { "type": "object", "description": "high-level snapshot: file list, important paths, tests, relevant modules" },
+        "architecture_references": { "type": "array", "items": { "type": "string" }, "description": "list of docs/ADRs/architecture files to consult" },
+        "prior_adrs": { "type": "array", "items": { "type": "string" }, "description": "paths or ids of prior ADRs" },
+        "policy_context": { "type": "object" },
+        "constraints": { "type": "object", "description": "safety, regulatory, resource, deployment constraints" },
+        "previous_agent_artifacts": { "type": "array", "items": { "type": "object" }, "description": "artifacts produced by earlier agents (e.g. developer notes, proposals)" }
+      },
+      "required": ["task_id","run_id","repository_revision","task_spec","repository_context"]
+    },
+    "outputs": {
+      "type": "object",
+      "properties": {
+        "architecture_assessment": { "type": "object", "description": "concise repo-grounded assessment of current architecture and scope impact" },
+        "affected_components": { "type": "array", "items": { "type": "string" } },
+        "proposed_changes": { "type": "array", "items": { "type": "object" }, "description": "high-level change proposals (no implementation)" },
+        "interfaces_contracts": { "type": "array", "items": { "type": "object" } },
+        "data_flow_impact": { "type": "object" },
+        "state_ownership_impact": { "type": "object" },
+        "risks": { "type": "array", "items": { "type": "object" } },
+        "safety_implications": { "type": "array", "items": { "type": "object" } },
+        "testing_strategy": { "type": "object" },
+        "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
+        "developer_specification": { "type": "object", "description": "developer-ready implementation specification (files, line ranges, examples, tests)" },
+        "adr_required": { "type": "boolean" },
+        "adr_reference": { "type": ["string","null"] },
+        "artifact_refs": { "type": "array", "items": { "type": "object" }, "description": "references to produced Architect artifacts (architecture_proposal, acceptance_criteria, adr)" }
+      },
+      "required": ["architecture_assessment","affected_components","proposed_changes","acceptance_criteria","developer_specification"]
+    },
+    "artifact_types": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["architecture_assessment","architecture_proposal","adr","interface_spec","acceptance_criteria","developer_task","architecture_risk_report"] },
+      "default": ["architecture_assessment","architecture_proposal","acceptance_criteria","developer_task"]
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "read_only_repo": { "type": "boolean", "const": true },
+        "no_external_calls": { "type": "boolean", "const": true },
+        "no_production_change": { "type": "boolean", "const": true }
+      },
+      "required": ["read_only_repo","no_external_calls","no_production_change"]
+    }
+  },
+  "additionalProperties": false
+}
+{
+  "agent_id": "architect",
+  "role": "Architect / Technical Lead Agent",
+  "mission": "Produce technically sound architecture decisions (ADRs), interfaces, and acceptance criteria for tasks.",
+  "optimization_objective": "architectural correctness, clarity of ownership, and minimal, testable interfaces.",
+  "priorities": ["interface clarity", "single-state ownership", "simplicity", "backward compatibility"],
+  "distrusts": ["implementation-only proposals", "unverified test claims"],
+  "required_inputs": ["task_record", "repo_snapshot", "ADR_history", "CI_history_optional"],
+  "expected_outputs": ["adr_proposal_json", "affected_components", "acceptance_criteria", "risk_annotations"],
+  "success_criteria": ["ADR machine schema valid", "acceptance criteria are testable"],
+  "failure_criteria": ["unresolvable interface conflicts", "missing acceptance criteria"],
+  "forbidden_actions": ["modify production code", "merge branches", "authorize live trading", "change production risk limits"],
+  "escalation_conditions": ["conflicting ADRs", "ambiguous ownership", "safety-critical uncertain impact"],
+  "allowed_repository_access": {"read": true, "write": false},
+  "allowed_artifact_types": ["adr_proposal", "architecture_diagram", "acceptance_criteria"]
+}

@@ -60,3 +60,6 @@ data/**/*.csv
 *.feather
 *.h5
 *.hdf5
+
+# Orchestrator runtime state (do NOT commit)
+.orchestrator/

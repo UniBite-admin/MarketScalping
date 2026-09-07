@@ -1,0 +1,39 @@
+{
+  "states": [
+    "BACKLOG",
+    "TRIAGE",
+    "ARCHITECTURE",
+    "READY",
+    "DEVELOPMENT",
+    "CI",
+    "QA",
+    "SAFETY",
+    "HUMAN_APPROVAL",
+    "MERGE",
+    "DEPLOY",
+    "MONITOR",
+    "FAILED",
+    "BLOCKED",
+    "ESCALATED"
+  ],
+  "transitions": [
+    {"from": "BACKLOG", "to": "TRIAGE", "responsible": "orchestrator", "required_artifacts": ["task_record"]},
+    {"from": "TRIAGE", "to": "ARCHITECTURE", "responsible": "architect", "required_artifacts": ["triage_notes"]},
+    {"from": "ARCHITECTURE", "to": "READY", "responsible": "orchestrator", "artifact_producer": "architect", "required_artifacts": ["architecture_result"], "post_condition": "adr_validated"},
+    {"from": "READY", "to": "DEVELOPMENT", "responsible": "developer", "required_artifacts": ["approved_task_record"]},
+    {"from": "DEVELOPMENT", "to": "CI", "responsible": "orchestrator", "required_artifacts": ["implementation_artifact"]},
+    {"from": "CI", "to": "QA", "responsible": "orchestrator", "required_artifacts": ["ci_results"], "condition": "ci_pass"},
+    {"from": "QA", "to": "SAFETY", "responsible": "orchestrator", "required_artifacts": ["tests_result"]},
+    {"from": "SAFETY", "to": "HUMAN_APPROVAL", "responsible": "orchestrator", "required_artifacts": ["safety_report"], "condition": "safety_requires_human"},
+    {"from": "SAFETY", "to": "MERGE", "responsible": "orchestrator", "required_artifacts": ["safety_report"], "condition": "safety_allows_merge_without_human"},
+    {"from": "HUMAN_APPROVAL", "to": "MERGE", "responsible": "human", "required_artifacts": ["human_approval_record"]},
+    {"from": "MERGE", "to": "DEPLOY", "responsible": "human", "required_artifacts": ["merge_record"]},
+    {"from": "DEPLOY", "to": "MONITOR", "responsible": "orchestrator", "required_artifacts": ["deploy_record"]}
+  ],
+  "guards": [
+    {"id": "no_skip_safety", "description": "Prevent skipping SAFETY for risk/execution/accounting changes", "enforce_on": "transition", "from": "QA", "to": "MERGE", "condition": "changes_touching(risk|execution|accounting) -> block"},
+    {"id": "no_direct_developer_merge", "description": "Prevent Developer directly merging into protected branches", "enforce_on": "action", "actor": "developer", "forbidden": ["merge_to_protected"]},
+    {"id": "no_direct_deploy_from_developer", "description": "Prevent Developer directly deploying to production", "enforce_on": "action", "actor": "developer", "forbidden": ["deploy_production"]},
+    {"id": "prevent_infinite_retries", "description": "Track retry counts and escalate after threshold", "threshold": 2}
+  ]
+}

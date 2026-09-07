@@ -1,0 +1,102 @@
+{
+  "policies": [
+    {
+      "id": "no-withdrawal-capability",
+      "description": "Prevent addition of withdrawal capability in code or configuration.",
+      "condition": {"path_regex": "withdraw|withdrawal|transfer_out|send_funds", "match_type": "filename_or_content"},
+      "action": "block",
+      "enforce_level": "strict"
+    },
+    {
+      "id": "no-live-credentials-in-dev",
+      "description": "Development agents must not receive live trading API credentials.",
+      "condition": {"concept": "credential_provisioning", "role": "developer|agent"},
+      "action": "block",
+      "enforce_level": "strict"
+    },
+    {
+      "id": "no-auto-live-trading-enable",
+      "description": "Prevent code paths that automatically enable live trading without explicit human approval.",
+      "condition": {"path_regex": "enable_live|LIVE_TRADING|ENABLE_LIVE", "match_type": "content"},
+      "action": "block",
+      "enforce_level": "strict"
+    },
+    {
+      "id": "no-protected-branch-merge-by-agents",
+      "description": "Agents are not permitted to merge into protected branches.",
+      "condition": {"operation": "merge", "target_branch_pattern": "main|master|live/.*|prod"},
+      "action": "block",
+      "enforce_level": "strict"
+    },
+    {
+      "id": "safety_review_for_risk_execution_accounting",
+      "description": "Any changes touching risk/execution/accounting require Safety review.",
+      "condition": {"paths": ["risk_engine.py","execution_engine.py","accounting_engine.py","position_manager.py"]},
+      "action": "require_safety_review",
+      "enforce_level": "strict"
+    },
+    {
+      "id": "paper_to_live_requires_human",
+      "description": "Paper to live trading transition requires explicit human approval.",
+      "condition": {"concept": "paper_to_live"},
+      "action": "require_human_approval",
+      "enforce_level": "strict"
+    },
+    {
+      "id": "risk_limit_changes_require_human",
+      "description": "Any changes to risk limits require human approval.",
+      "condition": {"concept": "risk_limit_change"},
+      "action": "require_human_approval",
+      "enforce_level": "strict"
+    },
+    {
+      "id": "api_permission_escalation_requires_human",
+      "description": "API permission escalations require human approval.",
+      "condition": {"concept": "api_permission_escalation"},
+      "action": "require_human_approval",
+      "enforce_level": "strict"
+    },
+    {
+      "id": "production_deploy_requires_human",
+      "description": "Production deployment requires explicit human approval.",
+      "condition": {"concept": "production_deploy"},
+      "action": "require_human_approval",
+      "enforce_level": "strict"
+    },
+    {
+      "id": "major_safety_arch_change_requires_human",
+      "description": "Major safety architecture changes require human approval.",
+      "condition": {"concept": "major_safety_arch_change"},
+      "action": "require_human_approval",
+      "enforce_level": "strict"
+    },
+    {
+      "id": "agent_retry_limits",
+      "description": "Limit the number of automatic retries for agents before escalation.",
+      "condition": {"concept": "agent_run"},
+      "action": {"type": "limit_retries", "max_retries": 2},
+      "enforce_level": "strict"
+    },
+    {
+      "id": "infinite_loop_prevention",
+      "description": "Detect and prevent infinite workflow loops by enforcing transition counters.",
+      "condition": {"concept": "workflow_cycle_count"},
+      "action": {"type": "escalate", "threshold": 5},
+      "enforce_level": "strict"
+    },
+    {
+      "id": "developer_must_use_isolated_worktree",
+      "description": "Developer must work in an isolated worktree/branch for the task.",
+      "condition": {"operation": "code_edit", "actor_role": "developer"},
+      "action": "require_worktree_isolation",
+      "enforce_level": "strict"
+    },
+    {
+      "id": "architecture_changes_require_adr",
+      "description": "Architecture-affecting changes require an ADR proposal from Architect before Development.",
+      "condition": {"concept": "architecture_change"},
+      "action": "require_adr",
+      "enforce_level": "strict"
+    }
+  ]
+}
