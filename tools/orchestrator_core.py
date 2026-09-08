@@ -4,6 +4,7 @@
 This module implements a minimal deterministic coordinator foundation for STEP 2.
 Do NOT connect to live systems or modify trading engine files.
 """
+import hashlib
 import json
 import os
 import re
@@ -14,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from tools.agent_runtime import AgentRuntime, InvocationRequest
 from tools.architect_agent import ArchitectExecutor
 from tools.developer_agent import DeveloperExecutor
+from tools.qa_agent import QAExecutor
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 ORCH_DIR = os.path.join(ROOT, ".orchestrator")
@@ -424,6 +426,138 @@ class Orchestrator:
         else:
             self.loop_threshold = 5  # explicit fallback
 
+    def _project_task_record(self, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        projected = {}
+        for key in ("task_id", "title", "description", "authorized", "status"):
+            if key in value:
+                projected[key] = value[key]
+        if "scope" in value:
+            projected["scope"] = value["scope"]
+        if "task_spec" in value:
+            projected["task_spec"] = value["task_spec"]
+        return projected
+
+    def _project_architecture_result(self, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        projected = {}
+        for key in (
+            "task_id",
+            "repository_revision",
+            "architecture_assessment",
+            "affected_components",
+            "acceptance_criteria",
+            "developer_specification",
+            "adr_required",
+            "adr_reference",
+            "status",
+            "safety_implications",
+        ):
+            if key in value:
+                projected[key] = value[key]
+        return projected
+
+    def _project_repository_context(self, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        projected = {}
+        for key in ("repository_revision", "file_list", "files"):
+            if key in value:
+                projected[key] = value[key]
+        if "repository_state" in value:
+            projected["repository_state"] = value["repository_state"]
+        return projected
+
+    def _project_implementation_artifact(self, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        projected = {}
+        if "task_id" in value:
+            projected["task_id"] = value["task_id"]
+        if "repository_revision" in value:
+            projected["repository_revision"] = value["repository_revision"]
+        content = value.get("content") if isinstance(value.get("content"), dict) else {}
+        for key in (
+            "changed_files",
+            "implementation_status",
+            "verification_status",
+            "known_limitations",
+            "blockers",
+        ):
+            if key in content:
+                projected[key] = content[key]
+        return projected
+
+    def _project_test_manifest(self, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        projected = {}
+        if "task_id" in value:
+            projected["task_id"] = value["task_id"]
+        if "repository_revision" in value:
+            projected["repository_revision"] = value["repository_revision"]
+        content = value.get("content") if isinstance(value.get("content"), dict) else {}
+        for key in (
+            "tests_executed",
+            "results",
+            "verification_status",
+            "relevant_failures",
+        ):
+            if key in content:
+                projected[key] = content[key]
+        return projected
+
+    def _normalize_qa_fingerprint_payload(self, task_spec: Dict[str, Any]) -> Dict[str, Any]:
+        canonical = {}
+        for key in (
+            "task_id",
+            "repository_revision",
+            "task_record",
+            "architecture_result",
+            "repository_context",
+            "implementation_artifact",
+            "test_manifest",
+        ):
+            value = task_spec.get(key)
+            if value is None:
+                continue
+            if key == "task_record":
+                canonical[key] = self._project_task_record(value)
+            elif key == "architecture_result":
+                canonical[key] = self._project_architecture_result(value)
+            elif key == "repository_context":
+                canonical[key] = self._project_repository_context(value)
+            elif key == "implementation_artifact":
+                canonical[key] = self._project_implementation_artifact(value)
+            elif key == "test_manifest":
+                canonical[key] = self._project_test_manifest(value)
+            else:
+                canonical[key] = value
+        return canonical
+
+    def _compute_qa_fingerprint(self, task_spec: Dict[str, Any]) -> str:
+        canonical = self._normalize_qa_fingerprint_payload(task_spec)
+        serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def _get_qa_run_fingerprint(self, task_id: str, run_id: str) -> Optional[str]:
+        task = self.store.read_task(task_id)
+        if task is None:
+            return None
+        for artifact in reversed(task.get("artifacts", [])):
+            if artifact.get("artifact_type") != "invocation_record":
+                continue
+            if artifact.get("run_id") != run_id:
+                continue
+            content = artifact.get("content") or {}
+            if content.get("agent_role") != "QA":
+                continue
+            if content.get("logical_fingerprint"):
+                return content.get("logical_fingerprint")
+        return None
+
     def create_task(self, title: str, description: str = "", created_by: str = "system", **kwargs) -> Dict[str, Any]:
         return self.store.create_task(title, description, created_by, extra=kwargs)
 
@@ -657,6 +791,223 @@ class Orchestrator:
                     self.store.append_transition(task_id, "READY", actor)
                     self.store.update_task(task_id, {"attempt": 0})
                     return {"status": "ok", "task": self.store.read_task(task_id)}
+
+            # Special handling for QA: invoke QA via AgentRuntime
+            if target_state == "QA":
+                task_spec = dict(task.get("task_spec") or {})
+                if not isinstance(task_spec, dict):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_qa_task_spec")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_qa_task_spec"}
+
+                required_inputs = (
+                    "task_record",
+                    "architecture_result",
+                    "repository_context",
+                    "repository_revision",
+                    "implementation_artifact",
+                    "test_manifest",
+                )
+                missing = [key for key in required_inputs if key not in task_spec or not task_spec.get(key)]
+                if missing:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note=f"missing_qa_inputs:{','.join(missing)}")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_qa_inputs", "missing": missing}
+
+                task_record = task_spec.get("task_record") or {}
+                if not isinstance(task_record, dict):
+                    task_record = {}
+                task_record["task_id"] = task_id
+                task_record["status"] = "READY"
+                task_spec["task_record"] = task_record
+                task_spec["task_id"] = task_id
+
+                architecture_result = task_spec.get("architecture_result") or {}
+                if isinstance(architecture_result, dict):
+                    architecture_result["task_id"] = task_id
+                    architecture_result["run_id"] = task_spec.get("run_id") or str(uuid.uuid4())
+                    architecture_result["repository_revision"] = task_spec.get("repository_revision") or task.get("repository_revision")
+                    task_spec["architecture_result"] = architecture_result
+
+                implementation_artifact = task_spec.get("implementation_artifact") or {}
+                if isinstance(implementation_artifact, dict):
+                    implementation_artifact["task_id"] = task_id
+                    implementation_artifact["run_id"] = task_spec.get("run_id") or str(uuid.uuid4())
+                    implementation_artifact["repository_revision"] = task_spec.get("repository_revision") or task.get("repository_revision")
+                    task_spec["implementation_artifact"] = implementation_artifact
+
+                test_manifest = task_spec.get("test_manifest") or {}
+                if isinstance(test_manifest, dict):
+                    test_manifest["task_id"] = task_id
+                    test_manifest["run_id"] = task_spec.get("run_id") or str(uuid.uuid4())
+                    test_manifest["repository_revision"] = task_spec.get("repository_revision") or task.get("repository_revision")
+                    task_spec["test_manifest"] = test_manifest
+
+                repo_rev = task_spec.get("repository_revision") or task.get("repository_revision")
+                if not repo_rev:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_repository_revision")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_repository_revision"}
+
+                run_id = task_spec.get("run_id") or str(uuid.uuid4())
+                task_spec["run_id"] = run_id
+                task["task_spec"] = task_spec
+                self.store.update_task(task_id, {"task_spec": task_spec})
+
+                current_fingerprint = self._compute_qa_fingerprint(task_spec)
+                stored_fingerprint = self._get_qa_run_fingerprint(task_id, run_id)
+                if stored_fingerprint and stored_fingerprint != current_fingerprint:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="qa_run_id_fingerprint_mismatch")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    if task["attempt"] > getattr(self, "retry_limit", 2):
+                        self.store.append_transition(task_id, "ESCALATED", actor, note="qa_run_id_fingerprint_mismatch")
+                        return {"status": "escalated", "reason": "qa_run_id_fingerprint_mismatch"}
+                    return {"status": "blocked", "reason": "qa_run_id_fingerprint_mismatch"}
+
+                inv_req = InvocationRequest(
+                    task_id=task_id,
+                    agent_role="QA",
+                    repository_revision=repo_rev,
+                    worktree=None,
+                    task_spec=task_spec,
+                    input_artifacts=task.get("artifacts", []),
+                    policy_context={p.get("policy_id"): p for p in policy_results},
+                    timeout_seconds=60,
+                    attempt=task.get("attempt", 0),
+                    run_id=run_id,
+                )
+
+                runtime = self.runtime
+                runtime.executor = QAExecutor()
+                invocation_record = {
+                    "artifact_id": str(uuid.uuid4()),
+                    "artifact_type": "invocation_record",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "producer": "orchestrator",
+                    "created_at": _now_iso(),
+                    "content": {
+                        "agent_role": "QA",
+                        "repository_revision": repo_rev,
+                        "attempt": task.get("attempt", 0),
+                        "logical_fingerprint": current_fingerprint,
+                    },
+                }
+                self.store.append_artifact(task_id, invocation_record)
+
+                existing_result = runtime.get_result(run_id)
+                result = existing_result if existing_result is not None else runtime.invoke(inv_req)
+
+                result_art = {
+                    "artifact_id": str(uuid.uuid4()),
+                    "artifact_type": "agent_result",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "producer": "qa_runtime",
+                    "created_at": _now_iso(),
+                    "content": {
+                        "status": result.status,
+                        "started_at": result.started_at,
+                        "completed_at": result.completed_at,
+                        "error": result.error,
+                    },
+                }
+                self.store.append_artifact(task_id, result_art)
+
+                if result.status in ("FAILED", "TIMED_OUT", "CANCELLED", "BLOCKED"):
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    if task["attempt"] > getattr(self, "retry_limit", 2):
+                        self.store.append_transition(task_id, "ESCALATED", actor, note="qa_failed")
+                        return {"status": "escalated", "reason": "qa_failed"}
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="qa_failed")
+                    return {"status": "blocked", "reason": "qa_failed"}
+
+                output_arts = result.output_artifacts or []
+                if not output_arts:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="no_qa_artifacts")
+                    return {"status": "blocked", "reason": "no_qa_artifacts"}
+
+                required_env = ("artifact_id", "artifact_type", "task_id", "run_id", "repository_revision", "producer", "created_at", "content")
+                qa_result = None
+                defect_report = None
+                for art in output_arts:
+                    if not all(k in art for k in required_env):
+                        self.store.append_transition(task_id, "BLOCKED", actor, note="malformed_qa_envelope")
+                        return {"status": "blocked", "reason": "malformed_qa_envelope"}
+                    if art.get("artifact_type") == "qa_result":
+                        qa_result = art
+                    if art.get("artifact_type") == "defect_report":
+                        defect_report = art
+
+                if qa_result is None:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_qa_result")
+                    return {"status": "blocked", "reason": "missing_qa_result"}
+                if defect_report is None:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_defect_report")
+                    return {"status": "blocked", "reason": "missing_defect_report"}
+
+                qa_content = qa_result.get("content") or {}
+                defect_content = defect_report.get("content") or {}
+                qa_required = ("task_id", "run_id", "repository_revision", "decision", "verification_summary", "evidence_references", "defects", "limitations", "safety_relevant_findings")
+                if not all(k in qa_content for k in qa_required):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="malformed_qa_result")
+                    return {"status": "blocked", "reason": "malformed_qa_result"}
+                if qa_content.get("task_id") != task_id:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="task_mismatch")
+                    return {"status": "blocked", "reason": "task_mismatch"}
+                if qa_content.get("run_id") != run_id:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="run_id_mismatch")
+                    return {"status": "blocked", "reason": "run_id_mismatch"}
+                if str(qa_content.get("repository_revision")) != str(repo_rev):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="repository_revision_mismatch")
+                    return {"status": "blocked", "reason": "repository_revision_mismatch"}
+
+                defect_required = ("task_id", "run_id", "repository_revision", "defects")
+                if not all(k in defect_content for k in defect_required):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="malformed_defect_report")
+                    return {"status": "blocked", "reason": "malformed_defect_report"}
+                if defect_content.get("task_id") != task_id:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="defect_task_mismatch")
+                    return {"status": "blocked", "reason": "defect_task_mismatch"}
+                if defect_content.get("run_id") != run_id:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="defect_run_id_mismatch")
+                    return {"status": "blocked", "reason": "defect_run_id_mismatch"}
+                if str(defect_content.get("repository_revision")) != str(repo_rev):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="defect_repository_revision_mismatch")
+                    return {"status": "blocked", "reason": "defect_repository_revision_mismatch"}
+
+                self.store.append_artifact(task_id, qa_result)
+                self.store.append_artifact(task_id, defect_report)
+
+                decision = str(qa_content.get("decision") or "").upper()
+                if decision not in ("PASS", "FAIL", "BLOCKED", "INCONCLUSIVE"):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="invalid_qa_decision")
+                    return {"status": "blocked", "reason": "invalid_qa_decision"}
+
+                # QA decides verification state; Orchestrator applies workflow consequence.
+                if decision == "PASS":
+                    self.store.append_transition(task_id, target_state, actor, note="qa_pass")
+                    self.store.update_task(task_id, {"attempt": 0})
+                    return {"status": "ok", "task": self.store.read_task(task_id)}
+
+                self.store.append_transition(task_id, "BLOCKED", actor, note=f"qa_{decision.lower()}")
+                task = self.store.read_task(task_id)
+                task["attempt"] = task.get("attempt", 0) + 1
+                self.store.update_task(task_id, {"attempt": task["attempt"]})
+                if task["attempt"] > getattr(self, "retry_limit", 2):
+                    self.store.append_transition(task_id, "ESCALATED", actor, note="qa_retry_limit_exceeded")
+                    return {"status": "escalated", "reason": "qa_retry_limit_exceeded"}
+                return {"status": "blocked", "reason": decision.lower(), "qa_result": qa_content}
 
             # Special handling for DEVELOPMENT: invoke Developer via AgentRuntime
             if target_state == "DEVELOPMENT":

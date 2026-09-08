@@ -23,7 +23,7 @@
     {"from": "READY", "to": "DEVELOPMENT", "responsible": "developer", "required_artifacts": ["task_record"], "authorization": "orchestrator"},
     {"from": "DEVELOPMENT", "to": "CI", "responsible": "orchestrator", "required_artifacts": ["implementation_artifact"]},
     {"from": "CI", "to": "QA", "responsible": "orchestrator", "required_artifacts": ["ci_results"], "condition": "ci_pass"},
-    {"from": "QA", "to": "SAFETY", "responsible": "orchestrator", "required_artifacts": ["tests_result"]},
+    {"from": "QA", "to": "SAFETY", "responsible": "orchestrator", "required_artifacts": ["qa_result", "test_manifest"]},
     {"from": "SAFETY", "to": "HUMAN_APPROVAL", "responsible": "orchestrator", "required_artifacts": ["safety_report"], "condition": "safety_requires_human"},
     {"from": "SAFETY", "to": "MERGE", "responsible": "orchestrator", "required_artifacts": ["safety_report"], "condition": "safety_allows_merge_without_human"},
     {"from": "HUMAN_APPROVAL", "to": "MERGE", "responsible": "human", "required_artifacts": ["human_approval_record"]},
