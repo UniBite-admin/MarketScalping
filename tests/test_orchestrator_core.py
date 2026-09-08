@@ -280,6 +280,29 @@ class OrchestratorCoreTests(unittest.TestCase):
         self.assertEqual(first["status"], "ok")
         self.assertIn(second["status"], ("noop", "ok"))
 
+    def test_developer_and_qa_same_run_id_do_not_collide(self):
+        orch = Orchestrator()
+        shared_run_id = "shared-dev-qa-run"
+
+        dev_payload = self._developer_task_payload("task-shared-run", run_id=shared_run_id)
+        dev_task = orch.create_task("shared-run-dev", description="developer and qa share run id", created_by="tester", task_spec=dev_payload)
+        dev_tid = dev_task["task_id"]
+        orch.store.update_task(dev_tid, {"status": "READY"})
+        dev_res = orch.transition_task(dev_tid, "DEVELOPMENT", actor="developer")
+        self.assertEqual(dev_res["status"], "ok")
+
+        qa_payload = self._qa_task_payload("task-shared-run", run_id=shared_run_id)
+        qa_payload["task_id"] = dev_tid
+        qa_payload["task_record"]["task_id"] = dev_tid
+        qa_payload["implementation_artifact"]["task_id"] = dev_tid
+        qa_payload["test_manifest"]["task_id"] = dev_tid
+        qa_payload["architecture_result"]["task_id"] = dev_tid
+        orch.store.update_task(dev_tid, {"status": "CI", "task_spec": qa_payload})
+
+        qa_res = orch.transition_task(dev_tid, "QA", actor="orchestrator")
+        self.assertEqual(qa_res["status"], "ok")
+        self.assertEqual(orch.store.read_task(dev_tid)["status"], "QA")
+
     def test_qa_same_run_id_different_task_id_blocks(self):
         orch = Orchestrator()
         payload = self._qa_task_payload("task-qa-task-mismatch", run_id="qa-stable")

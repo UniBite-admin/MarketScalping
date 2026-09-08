@@ -136,8 +136,11 @@ class AgentRuntime:
 
     def __init__(self, executor: Optional[AgentExecutor] = None):
         self.executor = executor or MockAgentExecutor()
-        # simple in-memory registry: run_id -> AgentResult
+        # scope by agent role + run_id to avoid collisions across agent stages
         self._runs: Dict[str, AgentResult] = {}
+
+    def _run_key(self, agent_role: str, run_id: Optional[str]) -> str:
+        return f"{agent_role}:{run_id or 'unknown'}"
 
     def _validate(self, req: InvocationRequest) -> None:
         if not req.task_id:
@@ -152,10 +155,11 @@ class AgentRuntime:
             raise ValueError("attempt required")
 
     def invoke(self, req: InvocationRequest) -> AgentResult:
-        # idempotency: if run_id present and known return cached result
+        # idempotency: if run_id present and known for the same role return cached result
         run_id = req.run_id or str(uuid.uuid4())
-        if req.run_id and req.run_id in self._runs:
-            return self._runs[req.run_id]
+        run_key = self._run_key(req.agent_role, run_id)
+        if req.run_id and run_key in self._runs:
+            return self._runs[run_key]
 
         # validate required fields
         req.run_id = run_id
@@ -171,19 +175,19 @@ class AgentRuntime:
             started_at=started_at,
             execution_metadata={"repository_revision": req.repository_revision, "worktree": req.worktree},
         )
-        self._runs[run_id] = temp_result
+        self._runs[run_key] = temp_result
 
         # Execute
         try:
             # mark running
             temp_result.status = "RUNNING"
-            self._runs[run_id] = temp_result
+            self._runs[run_key] = temp_result
             result = self.executor.execute(req)
             result.execution_metadata.setdefault("repository_revision", req.repository_revision)
             result.execution_metadata.setdefault("worktree", req.worktree)
             result.started_at = temp_result.started_at
             result.completed_at = datetime.utcnow().isoformat() + "Z"
-            self._runs[run_id] = result
+            self._runs[run_key] = result
             return result
         except TimeoutError as te:
             err = {"type": "TimeoutError", "message": str(te), "trace": traceback.format_exc()}
@@ -197,7 +201,7 @@ class AgentRuntime:
                 error=err,
                 execution_metadata={"repository_revision": req.repository_revision, "worktree": req.worktree},
             )
-            self._runs[run_id] = res
+            self._runs[run_key] = res
             return res
         except Exception as exc:
             # Any other execution exception -> mark FAILED and record
@@ -212,10 +216,10 @@ class AgentRuntime:
                 error=err,
                 execution_metadata={"repository_revision": req.repository_revision, "worktree": req.worktree},
             )
-            self._runs[run_id] = res
+            self._runs[run_key] = res
             return res
 
-    def get_result(self, run_id: str) -> Optional[AgentResult]:
+    def get_result(self, run_id: str, agent_role: Optional[str] = None) -> Optional[AgentResult]:
         """Return the stored AgentResult for the given run_id or None if not found.
 
         Behavior notes (design-only):
@@ -223,4 +227,9 @@ class AgentRuntime:
         - Returns current state for active runs (STARTING, RUNNING) and full result for completed runs.
         - If runtime is in-memory only, results are only available while the process lives; durable persistence is out of scope for STEP 4D.
         """
+        if agent_role:
+            return self._runs.get(self._run_key(agent_role, run_id))
+        for key, result in self._runs.items():
+            if str(key).endswith(f":{run_id}"):
+                return result
         return self._runs.get(run_id)

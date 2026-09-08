@@ -362,10 +362,19 @@ class QAExecutor(AgentExecutor):
                     {"claim": summary},
                 ))
 
-        # Determine QA decision
+        # Determine QA decision.
+        # Non-blocking advisory findings (such as safety-sensitive review signals)
+        # must not fail an otherwise valid verification result.
         blocking_prereq_categories = {"authorization", "missing_input", "missing_evidence"}
+        blocking_categories = {"authorization", "missing_input", "missing_evidence", "test_failure", "task_identity", "architecture_drift"}
         if defects and any(d.get("blocking") and d.get("category") in blocking_prereq_categories for d in defects):
             decision = "BLOCKED"
+        elif defects and any(d.get("blocking") and d.get("category") in blocking_categories for d in defects):
+            decision = "FAIL"
+        elif defects and any(d.get("blocking") for d in defects):
+            decision = "FAIL"
+        elif defects and any(d.get("category") == "safety_sensitive_change" for d in defects):
+            decision = "PASS"
         elif defects:
             decision = "FAIL"
         elif any(item.get("result") == "INCONCLUSIVE" for item in evidence):

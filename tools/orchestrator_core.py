@@ -16,6 +16,7 @@ from tools.agent_runtime import AgentRuntime, InvocationRequest
 from tools.architect_agent import ArchitectExecutor
 from tools.developer_agent import DeveloperExecutor
 from tools.qa_agent import QAExecutor
+from tools.safety_agent import SafetyExecutor
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 ORCH_DIR = os.path.join(ROOT, ".orchestrator")
@@ -542,21 +543,145 @@ class Orchestrator:
         serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
-    def _get_qa_run_fingerprint(self, task_id: str, run_id: str) -> Optional[str]:
-        task = self.store.read_task(task_id)
-        if task is None:
-            return None
-        for artifact in reversed(task.get("artifacts", [])):
-            if artifact.get("artifact_type") != "invocation_record":
+    def _project_qa_result(self, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        projected = {}
+        for key in (
+            "task_id",
+            "run_id",
+            "repository_revision",
+            "decision",
+            "severity",
+            "verification_summary",
+            "evidence_references",
+            "defects",
+            "limitations",
+            "safety_relevant_findings",
+            "blocking_status",
+        ):
+            if key in value:
+                projected[key] = value[key]
+        return projected
+
+    def _normalize_safety_fingerprint_payload(self, task_spec: Dict[str, Any]) -> Dict[str, Any]:
+        canonical = {}
+        for key in (
+            "task_id",
+            "repository_revision",
+            "task_record",
+            "architecture_result",
+            "repository_context",
+            "implementation_artifact",
+            "test_manifest",
+            "qa_result",
+        ):
+            value = task_spec.get(key)
+            if value is None:
                 continue
-            if artifact.get("run_id") != run_id:
+            if key == "task_record":
+                canonical[key] = self._project_task_record(value)
+            elif key == "architecture_result":
+                canonical[key] = self._project_architecture_result(value)
+            elif key == "repository_context":
+                canonical[key] = self._project_repository_context(value)
+            elif key == "implementation_artifact":
+                canonical[key] = self._project_implementation_artifact(value)
+            elif key == "test_manifest":
+                canonical[key] = self._project_test_manifest(value)
+            elif key == "qa_result":
+                canonical[key] = self._project_qa_result(value)
+            else:
+                canonical[key] = value
+        return canonical
+
+    def _compute_safety_fingerprint(self, task_spec: Dict[str, Any]) -> str:
+        canonical = self._normalize_safety_fingerprint_payload(task_spec)
+        serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def _get_qa_run_fingerprint(self, task_id: str, run_id: str, agent_role: str = "QA") -> Optional[str]:
+        for task in reversed(self.store.list_tasks()):
+            if task is None:
                 continue
-            content = artifact.get("content") or {}
-            if content.get("agent_role") != "QA":
-                continue
-            if content.get("logical_fingerprint"):
-                return content.get("logical_fingerprint")
+            for artifact in reversed(task.get("artifacts", [])):
+                if artifact.get("artifact_type") != "invocation_record":
+                    continue
+                if artifact.get("run_id") != run_id:
+                    continue
+                if artifact.get("task_id") != task_id:
+                    return "__existing_run_id__"
+                content = artifact.get("content") or {}
+                recorded_agent_role = (content.get("agent_role") or "").upper()
+                if recorded_agent_role and recorded_agent_role != str(agent_role).upper():
+                    continue
+                if content.get("logical_fingerprint") is not None:
+                    return content.get("logical_fingerprint")
+                return "__existing_run_id__"
         return None
+
+    def _get_safety_run_fingerprint(self, task_id: str, run_id: str, agent_role: str = "SAFETY") -> Optional[str]:
+        for task in reversed(self.store.list_tasks()):
+            if task is None:
+                continue
+            for artifact in reversed(task.get("artifacts", [])):
+                if artifact.get("artifact_type") != "invocation_record":
+                    continue
+                if artifact.get("run_id") != run_id:
+                    continue
+                if artifact.get("task_id") != task_id:
+                    return "__existing_run_id__"
+                content = artifact.get("content") or {}
+                recorded_agent_role = (content.get("agent_role") or "").upper()
+                if recorded_agent_role and recorded_agent_role != str(agent_role).upper():
+                    continue
+                if content.get("logical_fingerprint") is not None:
+                    return content.get("logical_fingerprint")
+                return "__existing_run_id__"
+        return None
+
+    def _materialize_task_spec_from_artifacts(self, task: Dict[str, Any], task_spec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        merged = dict(task_spec or {})
+        artifacts = task.get("artifacts") or []
+        artifact_by_type = {}
+        for art in artifacts:
+            if not isinstance(art, dict):
+                continue
+            t = art.get("artifact_type")
+            if t:
+                artifact_by_type.setdefault(t, []).append(art)
+
+        for key, art_type in (
+            ("architecture_result", "architecture_result"),
+            ("implementation_artifact", "implementation_artifact"),
+            ("test_manifest", "test_manifest"),
+            ("ci_results", "ci_results"),
+            ("qa_result", "qa_result"),
+            ("defect_report", "defect_report"),
+            ("safety_result", "safety_result"),
+            ("human_approval_record", "human_approval_record"),
+        ):
+            if key in merged:
+                continue
+            candidates = artifact_by_type.get(art_type, [])
+            if not candidates:
+                continue
+            merged[key] = candidates[-1]
+
+        if "task_record" not in merged:
+            merged["task_record"] = {
+                "task_id": task.get("task_id"),
+                "title": task.get("title"),
+                "status": task.get("status"),
+                "authorized": True,
+            }
+
+        if "repository_revision" not in merged:
+            merged["repository_revision"] = task.get("repository_revision")
+        if "run_id" not in merged and task.get("task_spec") and isinstance(task.get("task_spec"), dict):
+            merged["run_id"] = task["task_spec"].get("run_id")
+
+        return merged
 
     def create_task(self, title: str, description: str = "", created_by: str = "system", **kwargs) -> Dict[str, Any]:
         return self.store.create_task(title, description, created_by, extra=kwargs)
@@ -633,18 +758,23 @@ class Orchestrator:
                     self.store.append_transition(task_id, "PENDING_SAFETY_REVIEW", actor, note=f"policy:{pr.get('policy_id')}")
                     return {"status": "pending_safety_review", "policy": pr}
                 if pr.get("decision") == "REQUIRE_HUMAN_APPROVAL":
-                    # If the desired target is HUMAN_APPROVAL, proceed; otherwise mark pending
-                    if target_state == "HUMAN_APPROVAL":
+                    if current == "HUMAN_APPROVAL" and target_state == "MERGE":
+                        # Explicit human approval is already granted for this task; continue to the merge gate.
+                        pass
+                        
+                    elif target_state == "HUMAN_APPROVAL":
                         # proceed to human approval state
                         self.store.append_transition(task_id, "HUMAN_APPROVAL", actor, note=f"policy:{pr.get('policy_id')}")
                         return {"status": "ok", "task": self.store.read_task(task_id)}
-                    self.store.append_transition(task_id, "PENDING_HUMAN_APPROVAL", actor, note=f"policy:{pr.get('policy_id')}")
-                    return {"status": "pending_human_approval", "policy": pr}
+                    else:
+                        self.store.append_transition(task_id, "PENDING_HUMAN_APPROVAL", actor, note=f"policy:{pr.get('policy_id')}")
+                        return {"status": "pending_human_approval", "policy": pr}
 
-            # Loop protection: if history is too long, escalate
+            # Loop protection: do not collapse the approved final approval path into a retry loop.
             hist = task.get("history", [])
             loop_threshold = getattr(self, "loop_threshold", 5)
-            if len(hist) > loop_threshold:
+            is_valid_merge_approval = current == "HUMAN_APPROVAL" and target_state == "MERGE"
+            if len(hist) > loop_threshold and not is_valid_merge_approval:
                 self.store.append_transition(task_id, "ESCALATED", actor, note="loop_detected")
                 return {"status": "escalated", "reason": "loop_detected"}
 
@@ -690,6 +820,7 @@ class Orchestrator:
                 runtime = self.runtime
                 runtime.executor = ArchitectExecutor()
                 # record invocation artifact (audit)
+                logical_fingerprint = self._compute_qa_fingerprint(task_spec if isinstance(task_spec, dict) else {})
                 invocation_record = {
                     "artifact_id": str(uuid.uuid4()),
                     "artifact_type": "invocation_record",
@@ -697,12 +828,17 @@ class Orchestrator:
                     "run_id": run_id,
                     "producer": "orchestrator",
                     "created_at": _now_iso(),
-                    "content": {"agent_role": "ARCHITECT", "repository_revision": repo_rev, "attempt": task.get("attempt", 0)},
+                    "content": {
+                        "agent_role": "ARCHITECT",
+                        "repository_revision": repo_rev,
+                        "attempt": task.get("attempt", 0),
+                        "logical_fingerprint": logical_fingerprint,
+                    },
                 }
                 self.store.append_artifact(task_id, invocation_record)
 
                 # if existing run recorded, try to fetch its result first
-                existing_result = runtime.get_result(run_id)
+                existing_result = runtime.get_result(run_id, agent_role="ARCHITECT")
                 if existing_result is not None:
                     result = existing_result
                 else:
@@ -792,15 +928,38 @@ class Orchestrator:
                     self.store.update_task(task_id, {"attempt": 0})
                     return {"status": "ok", "task": self.store.read_task(task_id)}
 
-            # Special handling for QA: invoke QA via AgentRuntime
-            if target_state == "QA":
-                task_spec = dict(task.get("task_spec") or {})
-                if not isinstance(task_spec, dict):
-                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_qa_task_spec")
+            # Explicit CI gate: required evidence must exist and pass before QA.
+            if target_state == "CI":
+                task_spec = self._materialize_task_spec_from_artifacts(task, task.get("task_spec") or {})
+                task["task_spec"] = task_spec
+                self.store.update_task(task_id, {"task_spec": task_spec})
+
+                ci_result = task_spec.get("ci_results")
+                if not isinstance(ci_result, dict):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_ci_results")
                     task = self.store.read_task(task_id)
                     task["attempt"] = task.get("attempt", 0) + 1
                     self.store.update_task(task_id, {"attempt": task["attempt"]})
-                    return {"status": "blocked", "reason": "missing_qa_task_spec"}
+                    return {"status": "blocked", "reason": "missing_ci_results"}
+
+                content = ci_result.get("content") or {}
+                ci_status = str(content.get("status") or "").upper()
+                if ci_status not in ("PASSED", "PASS"):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="ci_failed")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "ci_failed", "ci_result": content}
+
+                self.store.append_transition(task_id, target_state, actor, note="ci_pass")
+                self.store.update_task(task_id, {"attempt": 0})
+                return {"status": "ok", "task": self.store.read_task(task_id)}
+
+            # Special handling for QA: invoke QA via AgentRuntime
+            if target_state == "QA":
+                task_spec = self._materialize_task_spec_from_artifacts(task, task.get("task_spec") or {})
+                task["task_spec"] = task_spec
+                self.store.update_task(task_id, {"task_spec": task_spec})
 
                 required_inputs = (
                     "task_record",
@@ -809,6 +968,7 @@ class Orchestrator:
                     "repository_revision",
                     "implementation_artifact",
                     "test_manifest",
+                    "ci_results",
                 )
                 missing = [key for key in required_inputs if key not in task_spec or not task_spec.get(key)]
                 if missing:
@@ -861,7 +1021,7 @@ class Orchestrator:
                 self.store.update_task(task_id, {"task_spec": task_spec})
 
                 current_fingerprint = self._compute_qa_fingerprint(task_spec)
-                stored_fingerprint = self._get_qa_run_fingerprint(task_id, run_id)
+                stored_fingerprint = self._get_qa_run_fingerprint(task_id, run_id, agent_role="QA")
                 if stored_fingerprint and stored_fingerprint != current_fingerprint:
                     self.store.append_transition(task_id, "BLOCKED", actor, note="qa_run_id_fingerprint_mismatch")
                     task = self.store.read_task(task_id)
@@ -903,7 +1063,7 @@ class Orchestrator:
                 }
                 self.store.append_artifact(task_id, invocation_record)
 
-                existing_result = runtime.get_result(run_id)
+                existing_result = runtime.get_result(run_id, agent_role="QA")
                 result = existing_result if existing_result is not None else runtime.invoke(inv_req)
 
                 result_art = {
@@ -1009,6 +1169,229 @@ class Orchestrator:
                     return {"status": "escalated", "reason": "qa_retry_limit_exceeded"}
                 return {"status": "blocked", "reason": decision.lower(), "qa_result": qa_content}
 
+            # Special handling for SAFETY: invoke Safety via AgentRuntime
+            if target_state == "SAFETY":
+                task_spec = self._materialize_task_spec_from_artifacts(task, task.get("task_spec") or {})
+                task["task_spec"] = task_spec
+                self.store.update_task(task_id, {"task_spec": task_spec})
+                if not isinstance(task_spec, dict):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_safety_task_spec")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_safety_task_spec"}
+
+                required_inputs = (
+                    "task_record",
+                    "architecture_result",
+                    "repository_context",
+                    "repository_revision",
+                    "implementation_artifact",
+                    "test_manifest",
+                    "qa_result",
+                )
+                missing = [key for key in required_inputs if key not in task_spec or not task_spec.get(key)]
+                if missing:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note=f"missing_safety_inputs:{','.join(missing)}")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_safety_inputs", "missing": missing}
+
+                task_record = task_spec.get("task_record") or {}
+                if not isinstance(task_record, dict):
+                    task_record = {}
+                task_record["task_id"] = task_id
+                task_record["status"] = "QA"
+                task_spec["task_record"] = task_record
+                task_spec["task_id"] = task_id
+
+                repo_rev = task_spec.get("repository_revision") or task.get("repository_revision")
+                if not repo_rev:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_repository_revision")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_repository_revision"}
+
+                run_id = task_spec.get("run_id") or str(uuid.uuid4())
+                task_spec["run_id"] = run_id
+                task["task_spec"] = task_spec
+                self.store.update_task(task_id, {"task_spec": task_spec})
+
+                current_fingerprint = self._compute_safety_fingerprint(task_spec)
+                stored_fingerprint = self._get_safety_run_fingerprint(task_id, run_id, agent_role="SAFETY")
+                if stored_fingerprint and stored_fingerprint != current_fingerprint:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="safety_run_id_fingerprint_mismatch")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    if task["attempt"] > getattr(self, "retry_limit", 2):
+                        self.store.append_transition(task_id, "ESCALATED", actor, note="safety_run_id_fingerprint_mismatch")
+                        return {"status": "escalated", "reason": "safety_run_id_fingerprint_mismatch"}
+                    return {"status": "blocked", "reason": "safety_run_id_fingerprint_mismatch"}
+
+                inv_req = InvocationRequest(
+                    task_id=task_id,
+                    agent_role="SAFETY",
+                    repository_revision=repo_rev,
+                    worktree=None,
+                    task_spec=task_spec,
+                    input_artifacts=task.get("artifacts", []),
+                    policy_context={p.get("policy_id"): p for p in policy_results},
+                    timeout_seconds=60,
+                    attempt=task.get("attempt", 0),
+                    run_id=run_id,
+                )
+
+                runtime = self.runtime
+                runtime.executor = SafetyExecutor()
+                invocation_record = {
+                    "artifact_id": str(uuid.uuid4()),
+                    "artifact_type": "invocation_record",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "producer": "orchestrator",
+                    "created_at": _now_iso(),
+                    "content": {
+                        "agent_role": "SAFETY",
+                        "repository_revision": repo_rev,
+                        "attempt": task.get("attempt", 0),
+                        "logical_fingerprint": current_fingerprint,
+                    },
+                }
+                self.store.append_artifact(task_id, invocation_record)
+
+                existing_result = runtime.get_result(run_id, agent_role="SAFETY")
+                result = existing_result if existing_result is not None else runtime.invoke(inv_req)
+
+                result_art = {
+                    "artifact_id": str(uuid.uuid4()),
+                    "artifact_type": "agent_result",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "producer": "safety_runtime",
+                    "created_at": _now_iso(),
+                    "content": {
+                        "status": result.status,
+                        "started_at": result.started_at,
+                        "completed_at": result.completed_at,
+                        "error": result.error,
+                    },
+                }
+                self.store.append_artifact(task_id, result_art)
+
+                if result.status in ("FAILED", "TIMED_OUT", "CANCELLED", "BLOCKED"):
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    if task["attempt"] > getattr(self, "retry_limit", 2):
+                        self.store.append_transition(task_id, "ESCALATED", actor, note="safety_failed")
+                        return {"status": "escalated", "reason": "safety_failed"}
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="safety_failed")
+                    return {"status": "blocked", "reason": "safety_failed"}
+
+                output_arts = result.output_artifacts or []
+                if not output_arts:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="no_safety_result")
+                    return {"status": "blocked", "reason": "no_safety_result"}
+
+                required_env = ("artifact_id", "artifact_type", "task_id", "run_id", "repository_revision", "producer", "created_at", "content")
+                safety_result = None
+                for art in output_arts:
+                    if not all(k in art for k in required_env):
+                        self.store.append_transition(task_id, "BLOCKED", actor, note="malformed_safety_envelope")
+                        return {"status": "blocked", "reason": "malformed_safety_envelope"}
+                    if art.get("artifact_type") == "safety_result":
+                        safety_result = art
+
+                if safety_result is None:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_safety_result")
+                    return {"status": "blocked", "reason": "missing_safety_result"}
+
+                safety_content = safety_result.get("content") or {}
+                safety_required = (
+                    "task_id",
+                    "run_id",
+                    "repository_revision",
+                    "decision",
+                    "severity",
+                    "evidence",
+                    "findings",
+                    "blocking_status",
+                    "limitations",
+                    "recommended_mitigations",
+                    "requires_human_approval",
+                )
+                if not all(k in safety_content for k in safety_required):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="malformed_safety_result")
+                    return {"status": "blocked", "reason": "malformed_safety_result"}
+                if safety_content.get("task_id") != task_id:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="task_mismatch")
+                    return {"status": "blocked", "reason": "task_mismatch"}
+                if safety_content.get("run_id") != run_id:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="run_id_mismatch")
+                    return {"status": "blocked", "reason": "run_id_mismatch"}
+                if str(safety_content.get("repository_revision")) != str(repo_rev):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="repository_revision_mismatch")
+                    return {"status": "blocked", "reason": "repository_revision_mismatch"}
+
+                decision = str(safety_content.get("decision") or "").upper()
+                if decision not in ("PASS", "FAIL", "BLOCKED", "INCONCLUSIVE", "REQUIRE_HUMAN_APPROVAL"):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="invalid_safety_decision")
+                    return {"status": "blocked", "reason": "invalid_safety_decision"}
+
+                self.store.append_artifact(task_id, safety_result)
+
+                if decision == "PASS":
+                    self.store.append_transition(task_id, target_state, actor, note="safety_pass")
+                    self.store.update_task(task_id, {"attempt": 0})
+                    return {"status": "ok", "task": self.store.read_task(task_id)}
+
+                if decision == "REQUIRE_HUMAN_APPROVAL":
+                    self.store.append_transition(task_id, "HUMAN_APPROVAL", actor, note="safety_requires_human_approval")
+                    self.store.update_task(task_id, {"attempt": 0})
+                    return {"status": "ok", "decision": decision, "task": self.store.read_task(task_id)}
+
+                self.store.append_transition(task_id, "BLOCKED", actor, note=f"safety_{decision.lower()}")
+                task = self.store.read_task(task_id)
+                task["attempt"] = task.get("attempt", 0) + 1
+                self.store.update_task(task_id, {"attempt": task["attempt"]})
+                if task["attempt"] > getattr(self, "retry_limit", 2):
+                    self.store.append_transition(task_id, "ESCALATED", actor, note="safety_retry_limit_exceeded")
+                    return {"status": "escalated", "reason": "safety_retry_limit_exceeded"}
+                return {"status": "blocked", "reason": decision.lower(), "safety_result": safety_content}
+
+            if target_state == "HUMAN_APPROVAL":
+                task_spec = self._materialize_task_spec_from_artifacts(task, task.get("task_spec") or {})
+                task["task_spec"] = task_spec
+                self.store.update_task(task_id, {"task_spec": task_spec})
+
+                approval = task_spec.get("human_approval_record")
+                if approval is None:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_human_approval_record")
+                    return {"status": "blocked", "reason": "missing_human_approval_record"}
+                if not approval.get("approved", False):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="human_approval_rejected")
+                    return {"status": "blocked", "reason": "human_approval_rejected"}
+
+                self.store.append_transition(task_id, target_state, actor, note="human_approval_granted")
+                self.store.update_task(task_id, {"attempt": 0})
+                return {"status": "ok", "task": self.store.read_task(task_id)}
+
+            if target_state == "MERGE":
+                task_spec = self._materialize_task_spec_from_artifacts(task, task.get("task_spec") or {})
+                task["task_spec"] = task_spec
+                self.store.update_task(task_id, {"task_spec": task_spec})
+                approval = task_spec.get("human_approval_record")
+                if approval is None or not approval.get("approved", False):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="merge_requires_human_approval")
+                    return {"status": "blocked", "reason": "merge_requires_human_approval"}
+
+                self.store.append_transition(task_id, target_state, actor, note="merge_gate_eligible")
+                self.store.update_task(task_id, {"attempt": 0})
+                return {"status": "ok", "task": self.store.read_task(task_id)}
+
             # Special handling for DEVELOPMENT: invoke Developer via AgentRuntime
             if target_state == "DEVELOPMENT":
                 task_spec = dict(task.get("task_spec") or {})
@@ -1093,19 +1476,25 @@ class Orchestrator:
 
                 runtime = self.runtime
                 runtime.executor = DeveloperExecutor()
-                invocation_record = {
-                    "artifact_id": str(uuid.uuid4()),
-                    "artifact_type": "invocation_record",
-                    "task_id": task_id,
-                    "run_id": run_id,
-                    "producer": "orchestrator",
-                    "created_at": _now_iso(),
-                    "content": {"agent_role": "DEVELOPER", "repository_revision": repo_rev, "attempt": task.get("attempt", 0)},
-                }
-                self.store.append_artifact(task_id, invocation_record)
-
-                existing_result = runtime.get_result(run_id)
+                existing_result = runtime.get_result(run_id, agent_role="DEVELOPER")
                 result = existing_result if existing_result is not None else runtime.invoke(inv_req)
+
+                if result.status not in ("FAILED", "TIMED_OUT", "CANCELLED"):
+                    invocation_record = {
+                        "artifact_id": str(uuid.uuid4()),
+                        "artifact_type": "invocation_record",
+                        "task_id": task_id,
+                        "run_id": run_id,
+                        "producer": "orchestrator",
+                        "created_at": _now_iso(),
+                        "content": {
+                            "agent_role": "DEVELOPER",
+                            "repository_revision": repo_rev,
+                            "attempt": task.get("attempt", 0),
+                            "logical_fingerprint": None,
+                        },
+                    }
+                    self.store.append_artifact(task_id, invocation_record)
 
                 result_art = {
                     "artifact_id": str(uuid.uuid4()),
@@ -1156,6 +1545,26 @@ class Orchestrator:
                 if not any(a.get("artifact_type") == "test_manifest" for a in normalized_output):
                     self.store.append_transition(task_id, "BLOCKED", actor, note="missing_test_manifest")
                     return {"status": "blocked", "reason": "missing_test_manifest"}
+
+                for art in normalized_output:
+                    if art.get("artifact_type") == "implementation_artifact":
+                        task_spec["implementation_artifact"] = art
+                    elif art.get("artifact_type") == "test_manifest":
+                        task_spec["test_manifest"] = art
+                task_spec["run_id"] = run_id
+                task["task_spec"] = task_spec
+                self.store.update_task(task_id, {"task_spec": task_spec})
+
+                logical_fingerprint = self._compute_qa_fingerprint(task_spec)
+                task_record = self.store.read_task(task_id)
+                for artifact in reversed(task_record.get("artifacts", [])):
+                    if artifact.get("artifact_type") != "invocation_record":
+                        continue
+                    content = artifact.get("content") or {}
+                    if artifact.get("run_id") == run_id and content.get("agent_role") == "DEVELOPER":
+                        artifact["content"] = {**content, "logical_fingerprint": logical_fingerprint}
+                        self.store.update_task(task_id, {"artifacts": task_record["artifacts"]})
+                        break
 
                 self.store.append_transition(task_id, target_state, actor, note="developer_execution")
                 self.store.update_task(task_id, {"attempt": 0})
