@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from tools.agent_runtime import AgentRuntime, InvocationRequest
 from tools.architect_agent import ArchitectExecutor
+from tools.developer_agent import DeveloperExecutor
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 ORCH_DIR = os.path.join(ROOT, ".orchestrator")
@@ -656,6 +657,158 @@ class Orchestrator:
                     self.store.append_transition(task_id, "READY", actor)
                     self.store.update_task(task_id, {"attempt": 0})
                     return {"status": "ok", "task": self.store.read_task(task_id)}
+
+            # Special handling for DEVELOPMENT: invoke Developer via AgentRuntime
+            if target_state == "DEVELOPMENT":
+                task_spec = dict(task.get("task_spec") or {})
+                if not isinstance(task_spec, dict):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_developer_task_spec")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_developer_task_spec"}
+
+                required_inputs = ("task_record", "architecture_result", "repository_context", "repository_revision", "run_id")
+                missing = [key for key in required_inputs if key not in task_spec or not task_spec.get(key)]
+                if missing:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note=f"missing_developer_inputs:{','.join(missing)}")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_developer_inputs", "missing": missing}
+
+                task_record = task_spec.get("task_record") or {}
+                if not isinstance(task_record, dict):
+                    task_record = {}
+                task_record["task_id"] = task_id
+                task_record["status"] = "READY"
+                task_spec["task_record"] = task_record
+
+                architecture_result = task_spec.get("architecture_result") or {}
+                if not isinstance(architecture_result, dict):
+                    architecture_result = {}
+                architecture_result["task_id"] = task_id
+                architecture_result["run_id"] = task_spec.get("run_id") or str(uuid.uuid4())
+                architecture_result["repository_revision"] = task_spec.get("repository_revision") or task.get("repository_revision")
+                task_spec["architecture_result"] = architecture_result
+
+                orchestrator_authorization = task_spec.get("orchestrator_authorization") or {}
+                if not isinstance(orchestrator_authorization, dict):
+                    orchestrator_authorization = {}
+                orchestrator_authorization["authorized"] = True
+                orchestrator_authorization["task_id"] = task_id
+                task_spec["orchestrator_authorization"] = orchestrator_authorization
+
+                if missing:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note=f"missing_developer_inputs:{','.join(missing)}")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_developer_inputs", "missing": missing}
+
+                repo_rev = task_spec.get("repository_revision") or task.get("repository_revision")
+                if not repo_rev:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_repository_revision")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_repository_revision"}
+
+                run_id = task_spec.get("run_id") or str(uuid.uuid4())
+                task_spec["run_id"] = run_id
+                task["task_spec"] = task_spec
+                self.store.update_task(task_id, {"task_spec": task_spec})
+
+                existing_inv = None
+                for a in reversed(task.get("artifacts", [])):
+                    if a.get("artifact_type") == "invocation_record" and a.get("run_id") == run_id:
+                        existing_inv = a
+                        break
+                if existing_inv is not None:
+                    run_id = existing_inv.get("run_id") or run_id
+
+                inv_req = InvocationRequest(
+                    task_id=task_id,
+                    agent_role="DEVELOPER",
+                    repository_revision=repo_rev,
+                    worktree=None,
+                    task_spec=task_spec,
+                    input_artifacts=task.get("artifacts", []),
+                    policy_context={p.get("policy_id"): p for p in policy_results},
+                    timeout_seconds=60,
+                    attempt=task.get("attempt", 0),
+                    run_id=run_id,
+                )
+
+                runtime = self.runtime
+                runtime.executor = DeveloperExecutor()
+                invocation_record = {
+                    "artifact_id": str(uuid.uuid4()),
+                    "artifact_type": "invocation_record",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "producer": "orchestrator",
+                    "created_at": _now_iso(),
+                    "content": {"agent_role": "DEVELOPER", "repository_revision": repo_rev, "attempt": task.get("attempt", 0)},
+                }
+                self.store.append_artifact(task_id, invocation_record)
+
+                existing_result = runtime.get_result(run_id)
+                result = existing_result if existing_result is not None else runtime.invoke(inv_req)
+
+                result_art = {
+                    "artifact_id": str(uuid.uuid4()),
+                    "artifact_type": "agent_result",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "producer": "developer_runtime",
+                    "created_at": _now_iso(),
+                    "content": {
+                        "status": result.status,
+                        "started_at": result.started_at,
+                        "completed_at": result.completed_at,
+                        "error": result.error,
+                    },
+                }
+                self.store.append_artifact(task_id, result_art)
+
+                if result.status in ("FAILED", "TIMED_OUT", "CANCELLED"):
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    if task["attempt"] > getattr(self, "retry_limit", 2):
+                        self.store.append_transition(task_id, "ESCALATED", actor, note="developer_failed")
+                        return {"status": "escalated", "reason": "developer_failed"}
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="developer_failed")
+                    return {"status": "blocked", "reason": "developer_failed"}
+
+                output_arts = result.output_artifacts or []
+                if not output_arts:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="no_developer_artifacts")
+                    return {"status": "blocked", "reason": "no_developer_artifacts"}
+
+                required_env = ("artifact_id", "artifact_type", "task_id", "run_id", "repository_revision", "producer", "created_at", "content")
+                normalized_output = []
+                for art in output_arts:
+                    if not all(k in art for k in required_env):
+                        self.store.append_transition(task_id, "BLOCKED", actor, note="malformed_developer_envelope")
+                        return {"status": "blocked", "reason": "malformed_developer_envelope"}
+                    if art.get("artifact_type") not in ("implementation_artifact", "test_manifest"):
+                        normalized_output.append(art)
+                        continue
+                    normalized_output.append(art)
+                    self.store.append_artifact(task_id, art)
+
+                if not any(a.get("artifact_type") == "implementation_artifact" for a in normalized_output):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_implementation_artifact")
+                    return {"status": "blocked", "reason": "missing_implementation_artifact"}
+                if not any(a.get("artifact_type") == "test_manifest" for a in normalized_output):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_test_manifest")
+                    return {"status": "blocked", "reason": "missing_test_manifest"}
+
+                self.store.append_transition(task_id, target_state, actor, note="developer_execution")
+                self.store.update_task(task_id, {"attempt": 0})
+                return {"status": "ok", "task": self.store.read_task(task_id)}
 
             # Otherwise normal transition
             self.store.append_transition(task_id, target_state, actor)

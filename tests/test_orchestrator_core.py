@@ -158,6 +158,80 @@ class OrchestratorCoreTests(unittest.TestCase):
         res = orch.transition_task(tid, "TRIAGE", actor="tester")
         self.assertIn(res["status"], ("ok", "blocked", "pending_safety_review", "pending_human_approval", "noop"))
 
+    def _developer_task_payload(self, task_id: str, run_id: str = "dev-run-1"):
+        return {
+            "task_record": {
+                "task_id": task_id,
+                "title": "Add minimal feature",
+                "scope": ["market_data.py"],
+                "authorized": True,
+                "status": "READY",
+            },
+            "architecture_result": {
+                "task_id": task_id,
+                "run_id": run_id,
+                "repository_revision": "repo-123",
+                "architecture_assessment": {"summary": "ok"},
+                "affected_components": ["market_data.py"],
+                "proposed_changes": ["Add feature"],
+                "acceptance_criteria": ["Feature works"],
+                "developer_specification": {"files": ["market_data.py"], "high_level_changes": ["Add minimal logic"]},
+                "adr_required": False,
+                "status": "READY",
+            },
+            "repository_context": {"file_list": ["market_data.py", "README.md"], "files": ["market_data.py", "README.md"]},
+            "repository_revision": "repo-123",
+            "run_id": run_id,
+            "orchestrator_authorization": {"authorized": True, "task_id": task_id},
+            "scope": ["market_data.py"],
+            "implementation_target": "market_data.py",
+            "tests_to_run": ["python -m unittest discover -s tests -p \"test*.py\" -v"],
+        }
+
+    def test_orchestrator_developer_integration_success(self):
+        orch = Orchestrator()
+        task = orch.create_task("dev-task", description="build feature", created_by="tester", task_spec=self._developer_task_payload("task-dev-1"))
+        tid = task["task_id"]
+        orch.store.update_task(tid, {"status": "READY"})
+        res = orch.transition_task(tid, "DEVELOPMENT", actor="developer")
+        self.assertEqual(res["status"], "ok")
+        persisted = orch.store.read_task(tid)
+        self.assertEqual(persisted["status"], "DEVELOPMENT")
+        self.assertTrue(any(a.get("artifact_type") == "implementation_artifact" for a in persisted["artifacts"]))
+        self.assertTrue(any(a.get("artifact_type") == "test_manifest" for a in persisted["artifacts"]))
+
+    def test_orchestrator_developer_integration_blocks_missing_architecture(self):
+        orch = Orchestrator()
+        payload = self._developer_task_payload("task-dev-2")
+        payload.pop("architecture_result")
+        task = orch.create_task("dev-task-missing-arch", description="build feature", created_by="tester", task_spec=payload)
+        tid = task["task_id"]
+        orch.store.update_task(tid, {"status": "READY"})
+        res = orch.transition_task(tid, "DEVELOPMENT", actor="developer")
+        self.assertEqual(res["status"], "blocked")
+
+    def test_orchestrator_developer_integration_failure_blocks_workflow(self):
+        orch = Orchestrator()
+        payload = self._developer_task_payload("task-dev-3")
+        payload["simulate_failure"] = True
+        task = orch.create_task("dev-task-fail", description="fail feature", created_by="tester", task_spec=payload)
+        tid = task["task_id"]
+        orch.store.update_task(tid, {"status": "READY"})
+        res = orch.transition_task(tid, "DEVELOPMENT", actor="developer")
+        self.assertEqual(res["status"], "blocked")
+        self.assertIn("BLOCKED", [a.get("state") for a in orch.store.read_task(tid).get("history", [])])
+
+    def test_orchestrator_developer_integration_idempotent_run_id(self):
+        orch = Orchestrator()
+        payload = self._developer_task_payload("task-dev-4", run_id="stable-run")
+        task = orch.create_task("dev-task-idempotent", description="stable run", created_by="tester", task_spec=payload)
+        tid = task["task_id"]
+        orch.store.update_task(tid, {"status": "READY"})
+        res1 = orch.transition_task(tid, "DEVELOPMENT", actor="developer")
+        res2 = orch.transition_task(tid, "DEVELOPMENT", actor="developer")
+        self.assertEqual(res1["status"], "ok")
+        self.assertIn(res2["status"], ("noop", "ok"))
+
 
 if __name__ == "__main__":
     unittest.main()

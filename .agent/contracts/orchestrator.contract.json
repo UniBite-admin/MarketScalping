@@ -5,7 +5,7 @@
   "optimization_objective": "Correct, auditable, deterministic workflow routing and state management.",
   "priorities": ["safety-first", "deterministic policy enforcement", "auditability", "idempotent routing"],
   "distrusts": ["unverified agent artifacts", "unsigned external inputs"],
-  "required_inputs": ["task_record", ".agent/policies/", ".agent/contracts/", "repo_snapshot_sha"],
+  "required_inputs": ["task_record", ".agent/policies/", ".agent/contracts/", "repository_revision"],
   "expected_outputs": ["task_state_transitions", "artifact_index_entries", "policy_evaluation_records"],
   "success_criteria": ["all required artifacts present for a transition", "no unauthorized repo writes by Orchestrator"],
   "failure_criteria": ["policy violations detected", "unrecoverable worker failures", "infinite loop detection"],

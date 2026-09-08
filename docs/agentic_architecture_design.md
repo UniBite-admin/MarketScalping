@@ -38,7 +38,7 @@ High-level Principles
 Agent Roles & Contracts (concise)
 --------------------------------
 Each agent has a precise contract (input artifacts, output artifacts, forbidden actions). Contracts are machine-readable JSON schemas under `.agent/contracts/` (see Implementation plan). Key points:
-- Architect: input: task, repo_snapshot, ADR history; output: ADR proposal JSON + human summary; forbidden: direct code changes.
+- Architect: input: task_record, repository_context, ADR history; output: architecture_result plus ADR proposal JSON + human summary; forbidden: direct code changes.
 - Developer: input: approved ADR + acceptance criteria; output: implementation artifact (branch name, commit SHA, files_changed metadata) and tests; may create branch in private worktree and push via developer tooling; Orchestrator mediates PR metadata but does not itself modify code.
 - QA: input: implementation artifact + ADR; output: reproducible test artifact, defects with repro steps.
 - Safety: input: implementation + tests + ADR; output: safety report (pass/block, required changes). Safety can block progression but cannot merge or enable live trading.

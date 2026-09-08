@@ -20,7 +20,7 @@
     {"from": "BACKLOG", "to": "TRIAGE", "responsible": "orchestrator", "required_artifacts": ["task_record"]},
     {"from": "TRIAGE", "to": "ARCHITECTURE", "responsible": "architect", "required_artifacts": ["triage_notes"]},
     {"from": "ARCHITECTURE", "to": "READY", "responsible": "orchestrator", "artifact_producer": "architect", "required_artifacts": ["architecture_result"], "post_condition": "adr_validated"},
-    {"from": "READY", "to": "DEVELOPMENT", "responsible": "developer", "required_artifacts": ["approved_task_record"]},
+    {"from": "READY", "to": "DEVELOPMENT", "responsible": "developer", "required_artifacts": ["task_record"], "authorization": "orchestrator"},
     {"from": "DEVELOPMENT", "to": "CI", "responsible": "orchestrator", "required_artifacts": ["implementation_artifact"]},
     {"from": "CI", "to": "QA", "responsible": "orchestrator", "required_artifacts": ["ci_results"], "condition": "ci_pass"},
     {"from": "QA", "to": "SAFETY", "responsible": "orchestrator", "required_artifacts": ["tests_result"]},
