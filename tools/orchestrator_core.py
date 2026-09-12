@@ -685,8 +685,185 @@ class Orchestrator:
 
         return merged
 
+    def build_operator_snapshot(self) -> Dict[str, Any]:
+        """Return a deterministic read-only projection of current orchestrator state.
+
+        This is intentionally derived from existing task records, workflow history,
+        policy results, runtime execution metadata, and task artifacts. It never
+        mutates the store or creates secondary state.
+        """
+        tasks = self.store.list_tasks()
+        ordered_tasks = sorted(
+            tasks,
+            key=lambda item: (
+                item.get("created_at") or "",
+                item.get("task_id") or "",
+            ),
+        )
+
+        by_status: Dict[str, int] = {}
+        task_rows: List[Dict[str, Any]] = []
+        runtime_runs: List[Dict[str, Any]] = []
+        seen_runs = set()
+
+        snapshot_timestamps = []
+        for task in ordered_tasks:
+            status = task.get("status") or "UNKNOWN"
+            by_status[status] = by_status.get(status, 0) + 1
+            snapshot_timestamps.append(task.get("updated_at") or task.get("created_at") or "1970-01-01T00:00:00Z")
+            for hist in task.get("history", []) or []:
+                if isinstance(hist, dict):
+                    snapshot_timestamps.append(hist.get("at") or "1970-01-01T00:00:00Z")
+            for art in task.get("artifacts", []) or []:
+                if isinstance(art, dict):
+                    snapshot_timestamps.append(art.get("created_at") or "1970-01-01T00:00:00Z")
+
+            run_ids = []
+            agent_roles = []
+            artifact_refs = []
+            blockers = []
+            policy_decisions = []
+            for art in task.get("artifacts", []) or []:
+                if not isinstance(art, dict):
+                    continue
+                art_type = art.get("artifact_type")
+                if art_type:
+                    artifact_refs.append({
+                        "artifact_id": art.get("artifact_id"),
+                        "artifact_type": art_type,
+                        "run_id": art.get("run_id"),
+                        "task_id": art.get("task_id"),
+                    })
+                content = art.get("content") or {}
+                run_id = art.get("run_id")
+                agent_role = content.get("agent_role")
+                if run_id:
+                    run_ids.append(run_id)
+                    if agent_role:
+                        agent_roles.append(str(agent_role))
+                    if not isinstance(art.get("run_id"), type(None)):
+                        run_key = (str(task.get("task_id") or ""), str(run_id))
+                        if run_key not in seen_runs:
+                            seen_runs.add(run_key)
+                            runtime_runs.append({
+                                "task_id": task.get("task_id"),
+                                "run_id": run_id,
+                                "agent_role": str(agent_role) if agent_role else "UNKNOWN",
+                                "repository_revision": content.get("repository_revision") or task.get("repository_revision"),
+                                "created_at": art.get("created_at") or task.get("created_at"),
+                                "artifact_type": art_type,
+                            })
+            for item in task.get("policy_results", []) or []:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("triggered"):
+                    policy_decisions.append({
+                        "policy_id": item.get("policy_id"),
+                        "decision": item.get("decision"),
+                        "reason": item.get("reason"),
+                    })
+                    if item.get("decision") in {"BLOCK", "REQUIRE_SAFETY_REVIEW", "REQUIRE_HUMAN_APPROVAL"}:
+                        blockers.append({
+                            "policy_id": item.get("policy_id"),
+                            "decision": item.get("decision"),
+                            "reason": item.get("reason"),
+                        })
+            task_rows.append({
+                "task_id": task.get("task_id"),
+                "title": task.get("title"),
+                "status": status,
+                "created_at": task.get("created_at"),
+                "updated_at": task.get("updated_at"),
+                "assigned_agent": task.get("assigned_agent"),
+                "retry_count": task.get("attempt", 0),
+                "max_attempts": task.get("max_attempts"),
+                "repository_revision": task.get("repository_revision"),
+                "agent_roles": sorted(set(agent_roles)),
+                "active_run_ids": sorted(set(run_ids)),
+                "workflow_transitions": task.get("history", []) or [],
+                "artifact_refs": artifact_refs,
+                "policy_decisions": policy_decisions,
+                "blockers": blockers,
+                "requires_human_approval": any(item.get("decision") == "REQUIRE_HUMAN_APPROVAL" for item in policy_decisions),
+            })
+
+        terminal_states = {"FAILED", "BLOCKED", "ESCALATED", "MERGE", "MONITOR"}
+        active_task_count = sum(1 for row in task_rows if row["status"] not in terminal_states)
+
+        ordered_runtime = sorted(
+            runtime_runs,
+            key=lambda item: (
+                item.get("created_at") or "",
+                item.get("task_id") or "",
+                item.get("run_id") or "",
+            ),
+        )
+
+        snapshot_time = max(snapshot_timestamps) if snapshot_timestamps else "1970-01-01T00:00:00Z"
+        summary = {
+            "snapshot_timestamp_utc": snapshot_time,
+            "task_count": len(task_rows),
+            "active_task_count": active_task_count,
+            "by_status": {k: by_status.get(k, 0) for k in sorted(by_status)},
+            "blocked_task_count": by_status.get("BLOCKED", 0),
+            "failed_task_count": by_status.get("FAILED", 0) + by_status.get("ESCALATED", 0),
+            "completed_task_count": by_status.get("MERGE", 0) + by_status.get("MONITOR", 0),
+        }
+
+        return {
+            "snapshot_timestamp_utc": snapshot_time,
+            "summary": summary,
+            "tasks": task_rows,
+            "runtime": {
+                "run_count": len(ordered_runtime),
+                "runs": ordered_runtime,
+            },
+            "source_of_truth": {
+                "task_store": "TaskStore.tasks.jsonl",
+                "workflow": ".agent/workflows/workflow.json",
+                "policies": ".agent/policies/policies.json",
+                "runtime": "AgentRuntime._runs",
+            },
+            "read_only": True,
+        }
+
     def create_task(self, title: str, description: str = "", created_by: str = "system", **kwargs) -> Dict[str, Any]:
         return self.store.create_task(title, description, created_by, extra=kwargs)
+
+    def record_ci_result(self, task_id: str, run_id: str, status: str, command: str, evidence: Any,
+                        repository_revision: Optional[str] = None, producer: str = "ci") -> Dict[str, Any]:
+        task = self.store.read_task(task_id)
+        if task is None:
+            raise KeyError("task not found")
+
+        repo_rev = repository_revision or task.get("repository_revision")
+        artifact = {
+            "artifact_id": str(uuid.uuid4()),
+            "artifact_type": "ci_results",
+            "task_id": task_id,
+            "run_id": run_id,
+            "repository_revision": repo_rev,
+            "producer": producer,
+            "created_at": _now_iso(),
+            "content": {
+                "task_id": task_id,
+                "run_id": run_id,
+                "repository_revision": repo_rev,
+                "status": str(status or "").upper(),
+                "command": command,
+                "evidence": evidence,
+            },
+        }
+
+        self.store.append_artifact(task_id, artifact)
+        task_spec = task.get("task_spec") or {}
+        if not isinstance(task_spec, dict):
+            task_spec = {}
+        task_spec["ci_results"] = artifact
+        if repo_rev is not None:
+            task_spec["repository_revision"] = repo_rev
+        self.store.update_task(task_id, {"task_spec": task_spec})
+        return artifact
 
     def transition_task(self, task_id: str, target_state: str, actor: str) -> Dict[str, Any]:
         # Acquire lock
@@ -701,12 +878,50 @@ class Orchestrator:
                 raise KeyError("task not found")
 
             current = task.get("status")
+
+            if current == target_state and target_state in ("QA", "SAFETY"):
+                task_spec = task.get("task_spec") or {}
+                if isinstance(task_spec, dict):
+                    repo_rev = task_spec.get("repository_revision") or task.get("repository_revision")
+                    run_id = task_spec.get("run_id")
+                    if repo_rev and run_id:
+                        if target_state == "QA":
+                            current_fingerprint = self._compute_qa_fingerprint(task_spec)
+                            stored_fingerprint = self._get_qa_run_fingerprint(task_id, run_id, agent_role="QA")
+                            if stored_fingerprint and stored_fingerprint != current_fingerprint:
+                                self.store.append_transition(task_id, "BLOCKED", actor, note="qa_run_id_fingerprint_mismatch")
+                                task = self.store.read_task(task_id)
+                                task["attempt"] = task.get("attempt", 0) + 1
+                                self.store.update_task(task_id, {"attempt": task["attempt"]})
+                                if task["attempt"] > getattr(self, "retry_limit", 2):
+                                    self.store.append_transition(task_id, "ESCALATED", actor, note="qa_run_id_fingerprint_mismatch")
+                                    return {"status": "escalated", "reason": "qa_run_id_fingerprint_mismatch"}
+                                return {"status": "blocked", "reason": "qa_run_id_fingerprint_mismatch"}
+                        else:
+                            current_fingerprint = self._compute_safety_fingerprint(task_spec)
+                            stored_fingerprint = self._get_safety_run_fingerprint(task_id, run_id, agent_role="SAFETY")
+                            if stored_fingerprint and stored_fingerprint != current_fingerprint:
+                                self.store.append_transition(task_id, "BLOCKED", actor, note="safety_run_id_fingerprint_mismatch")
+                                task = self.store.read_task(task_id)
+                                task["attempt"] = task.get("attempt", 0) + 1
+                                self.store.update_task(task_id, {"attempt": task["attempt"]})
+                                if task["attempt"] > getattr(self, "retry_limit", 2):
+                                    self.store.append_transition(task_id, "ESCALATED", actor, note="safety_run_id_fingerprint_mismatch")
+                                    return {"status": "escalated", "reason": "safety_run_id_fingerprint_mismatch"}
+                                return {"status": "blocked", "reason": "safety_run_id_fingerprint_mismatch"}
+
             # idempotency: no-op if already in desired state
             if current == target_state:
                 return {"status": "noop", "task": task}
 
             # Validate state machine
             if not self.wf.validate_transition(current, target_state):
+                if current in {"DEVELOPMENT", "CI"} and target_state in {"QA", "SAFETY"}:
+                    self.store.append_transition(task_id, "BLOCKED", actor, note=f"invalid_transition:{current}->{target_state}")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "invalid_transition"}
                 # allow retry attempts from BLOCKED state to re-evaluate policies
                 if current != "BLOCKED":
                     raise ValueError(f"Invalid transition {current} -> {target_state}")
@@ -772,13 +987,56 @@ class Orchestrator:
                         self.store.append_transition(task_id, "PENDING_HUMAN_APPROVAL", actor, note=f"policy:{pr.get('policy_id')}")
                         return {"status": "pending_human_approval", "policy": pr}
 
-            # Loop protection: do not collapse the approved final approval path into a retry loop.
+            # Loop protection: only trigger when the workflow is oscillating on the same state,
+            # not when it is legitimately moving forward through the state machine.
             hist = task.get("history", [])
             loop_threshold = getattr(self, "loop_threshold", 5)
             is_valid_merge_approval = current == "HUMAN_APPROVAL" and target_state == "MERGE"
-            if len(hist) > loop_threshold and not is_valid_merge_approval:
-                self.store.append_transition(task_id, "ESCALATED", actor, note="loop_detected")
-                return {"status": "escalated", "reason": "loop_detected"}
+            recent_states = [entry.get("state") for entry in reversed(hist) if isinstance(entry, dict) and entry.get("state") is not None]
+            if not is_valid_merge_approval and recent_states:
+                current_run = 0
+                last_state = recent_states[0]
+                for state in recent_states:
+                    if state == last_state:
+                        current_run += 1
+                    else:
+                        break
+                if current_run >= loop_threshold:
+                    self.store.append_transition(task_id, "ESCALATED", actor, note="loop_detected")
+                    return {"status": "escalated", "reason": "loop_detected"}
+
+            if target_state == "READY":
+                task_spec = self._materialize_task_spec_from_artifacts(task, task.get("task_spec") or {})
+                architecture_result = task_spec.get("architecture_result")
+                if not isinstance(architecture_result, dict) or architecture_result.get("artifact_type") != "architecture_result":
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_valid_architecture_result")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_valid_architecture_result"}
+
+                content = architecture_result.get("content") or {}
+                required = (
+                    "task_id",
+                    "run_id",
+                    "repository_revision",
+                    "architecture_assessment",
+                    "affected_components",
+                    "proposed_changes",
+                    "acceptance_criteria",
+                    "developer_specification",
+                    "adr_required",
+                    "status",
+                )
+                if not all(k in content for k in required):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="malformed_architecture_result")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "malformed_architecture_result"}
+                self.store.append_transition(task_id, target_state, actor, note="ready_after_architecture")
+                self.store.update_task(task_id, {"attempt": 0})
+                return {"status": "ok", "task": self.store.read_task(task_id)}
 
             # Otherwise perform transition and reset attempt counter
             # Special handling for ARCHITECTURE: invoke Architect via AgentRuntime
@@ -979,6 +1237,22 @@ class Orchestrator:
                     task["attempt"] = task.get("attempt", 0) + 1
                     self.store.update_task(task_id, {"attempt": task["attempt"]})
                     return {"status": "blocked", "reason": "missing_qa_inputs", "missing": missing}
+
+                ci_result = task_spec.get("ci_results")
+                if not isinstance(ci_result, dict) or ci_result.get("artifact_type") != "ci_results":
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_valid_ci_results")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_valid_ci_results"}
+
+                ci_content = (ci_result.get("content") or {})
+                if str(ci_content.get("status") or "").upper() not in ("PASSED", "PASS"):
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="ci_failed")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "ci_failed"}
 
                 task_record = task_spec.get("task_record") or {}
                 if not isinstance(task_record, dict):
@@ -1199,6 +1473,14 @@ class Orchestrator:
                     task["attempt"] = task.get("attempt", 0) + 1
                     self.store.update_task(task_id, {"attempt": task["attempt"]})
                     return {"status": "blocked", "reason": "missing_safety_inputs", "missing": missing}
+
+                qa_result = task_spec.get("qa_result")
+                if not isinstance(qa_result, dict) or qa_result.get("artifact_type") != "qa_result":
+                    self.store.append_transition(task_id, "BLOCKED", actor, note="missing_valid_qa_result")
+                    task = self.store.read_task(task_id)
+                    task["attempt"] = task.get("attempt", 0) + 1
+                    self.store.update_task(task_id, {"attempt": task["attempt"]})
+                    return {"status": "blocked", "reason": "missing_valid_qa_result"}
 
                 task_record = task_spec.get("task_record") or {}
                 if not isinstance(task_record, dict):
