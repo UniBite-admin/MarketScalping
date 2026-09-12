@@ -110,6 +110,7 @@ class FullAgenticE2ETests(unittest.TestCase):
 
     def test_stale_run_id_changes_are_rejected(self):
         task_spec = self._task_spec()
+        task_spec["run_id"] = "qa-stale-run"
         task = self.orch.create_task("e2e-stale-run", description="stale run", created_by="tester", repository_revision="repo-123", task_spec=task_spec)
         tid = task["task_id"]
 
@@ -118,24 +119,39 @@ class FullAgenticE2ETests(unittest.TestCase):
         self.orch.transition_task(tid, "DEVELOPMENT", actor="orchestrator")
         self.orch.transition_task(tid, "CI", actor="orchestrator")
 
-        task_spec2 = self._task_spec(task_id=tid)
-        task_spec2["run_id"] = "dev-run-1"
-        task_spec2["implementation_artifact"] = {
+        first = self.orch.transition_task(tid, "QA", actor="orchestrator")
+        self.assertEqual(first["status"], "ok")
+
+        stale_spec = self.orch.store.read_task(tid)["task_spec"]
+        stale_spec["repository_revision"] = "repo-999"
+        stale_spec["implementation_artifact"] = {
             "artifact_id": "impl-2",
             "artifact_type": "implementation_artifact",
             "task_id": tid,
-            "run_id": "dev-run-1",
-            "repository_revision": "repo-123",
+            "run_id": "qa-stale-run",
+            "repository_revision": "repo-999",
             "producer": "developer",
             "content": {
-                "changed_files": ["risk_engine.py"],
+                "changed_files": ["market_data.py"],
                 "implementation_status": "IMPLEMENTED",
                 "verification_status": "PENDING",
                 "known_limitations": [],
                 "blockers": [],
             },
         }
-        self.orch.store.update_task(tid, {"task_spec": task_spec2})
+        stale_spec["architecture_result"] = {
+            "task_id": tid,
+            "run_id": "qa-stale-run",
+            "repository_revision": "repo-999",
+            "architecture_assessment": {"summary": "different architecture"},
+            "affected_components": ["market_data.py"],
+            "proposed_changes": [{"file": "market_data.py", "proposal": "alternate approach"}],
+            "acceptance_criteria": ["different feature works"],
+            "developer_specification": {"files": ["market_data.py"], "high_level_changes": ["different logic"]},
+            "adr_required": False,
+            "status": "READY",
+        }
+        self.orch.store.update_task(tid, {"task_spec": stale_spec})
 
         res = self.orch.transition_task(tid, "QA", actor="orchestrator")
         self.assertIn(res["status"], ["blocked", "escalated"])

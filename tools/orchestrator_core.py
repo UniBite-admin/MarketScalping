@@ -601,6 +601,7 @@ class Orchestrator:
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def _get_qa_run_fingerprint(self, task_id: str, run_id: str, agent_role: str = "QA") -> Optional[str]:
+        target_role = str(agent_role).upper()
         for task in reversed(self.store.list_tasks()):
             if task is None:
                 continue
@@ -609,18 +610,19 @@ class Orchestrator:
                     continue
                 if artifact.get("run_id") != run_id:
                     continue
-                if artifact.get("task_id") != task_id:
-                    return "__existing_run_id__"
                 content = artifact.get("content") or {}
                 recorded_agent_role = (content.get("agent_role") or "").upper()
-                if recorded_agent_role and recorded_agent_role != str(agent_role).upper():
+                if recorded_agent_role and recorded_agent_role != target_role:
                     continue
+                if artifact.get("task_id") != task_id:
+                    return "__existing_run_id__"
                 if content.get("logical_fingerprint") is not None:
                     return content.get("logical_fingerprint")
                 return "__existing_run_id__"
         return None
 
     def _get_safety_run_fingerprint(self, task_id: str, run_id: str, agent_role: str = "SAFETY") -> Optional[str]:
+        target_role = str(agent_role).upper()
         for task in reversed(self.store.list_tasks()):
             if task is None:
                 continue
@@ -629,12 +631,12 @@ class Orchestrator:
                     continue
                 if artifact.get("run_id") != run_id:
                     continue
-                if artifact.get("task_id") != task_id:
-                    return "__existing_run_id__"
                 content = artifact.get("content") or {}
                 recorded_agent_role = (content.get("agent_role") or "").upper()
-                if recorded_agent_role and recorded_agent_role != str(agent_role).upper():
+                if recorded_agent_role and recorded_agent_role != target_role:
                     continue
+                if artifact.get("task_id") != task_id:
+                    return "__existing_run_id__"
                 if content.get("logical_fingerprint") is not None:
                     return content.get("logical_fingerprint")
                 return "__existing_run_id__"

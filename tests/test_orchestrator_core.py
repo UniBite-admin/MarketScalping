@@ -219,6 +219,19 @@ class OrchestratorCoreTests(unittest.TestCase):
                 "blockers": [],
             },
         }
+        ci_result = {
+            "artifact_id": "ci-result-1",
+            "artifact_type": "ci_results",
+            "task_id": task_id,
+            "run_id": run_id,
+            "repository_revision": "repo-123",
+            "producer": "ci",
+            "content": {
+                "status": "PASSED",
+                "command": "python -m unittest discover -s tests -p \"test_orchestrator_core.py\" -v",
+                "evidence": "ok",
+            },
+        }
         return {
             "task_record": {
                 "task_id": task_id,
@@ -241,6 +254,7 @@ class OrchestratorCoreTests(unittest.TestCase):
             "repository_revision": "repo-123",
             "implementation_artifact": implementation_artifact,
             "test_manifest": test_manifest,
+            "ci_results": ci_result,
             "run_id": run_id,
             "task_id": task_id,
         }
@@ -279,6 +293,37 @@ class OrchestratorCoreTests(unittest.TestCase):
         second = orch.transition_task(tid, "QA", actor="orchestrator")
         self.assertEqual(first["status"], "ok")
         self.assertIn(second["status"], ("noop", "ok"))
+
+    def test_qa_run_id_is_scoped_by_agent_role(self):
+        orch = Orchestrator()
+        shared_run = "shared-role-run"
+        dev_task = orch.create_task("dev-role-scope", description="developer scoped run", created_by="tester")
+        dev_tid = dev_task["task_id"]
+        orch.store.append_artifact(dev_tid, {
+            "artifact_id": "developer-invocation",
+            "artifact_type": "invocation_record",
+            "task_id": dev_tid,
+            "run_id": shared_run,
+            "producer": "orchestrator",
+            "created_at": "2026-09-12T00:00:00Z",
+            "content": {"agent_role": "DEVELOPER", "logical_fingerprint": "dev-fingerprint"},
+        })
+
+        self.assertIsNone(orch._get_qa_run_fingerprint(dev_tid, shared_run, agent_role="QA"))
+
+        qa_task = orch.create_task("qa-role-scope", description="qa scoped run", created_by="tester")
+        qa_tid = qa_task["task_id"]
+        orch.store.append_artifact(qa_tid, {
+            "artifact_id": "qa-invocation",
+            "artifact_type": "invocation_record",
+            "task_id": qa_tid,
+            "run_id": shared_run,
+            "producer": "orchestrator",
+            "created_at": "2026-09-12T00:00:01Z",
+            "content": {"agent_role": "QA", "logical_fingerprint": "qa-fingerprint"},
+        })
+
+        self.assertEqual(orch._get_qa_run_fingerprint(qa_tid, shared_run, agent_role="QA"), "qa-fingerprint")
 
     def test_developer_and_qa_same_run_id_do_not_collide(self):
         orch = Orchestrator()
