@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from accounting_engine import AccountingEngine
+from accounting_engine import AccountingDecision, AccountingEngine
+from market_data_engine import MarketDataEngine
+from position_manager import PositionManager
 
 
 class DummyLogger:
@@ -18,11 +20,21 @@ class DummyLogger:
 
 
 class ExecutionEventObj:
-    def __init__(self, action: str, reason: str = "risk_approved_dry_run_only", execution_event_id: str | None = None):
+    def __init__(
+        self,
+        action: str,
+        reason: str = "risk_approved_dry_run_only",
+        execution_event_id: str | None = None,
+        market: str = "BTC-EUR",
+        signal_strength: float = 0.0,
+        spread_pct: float = 0.0,
+    ):
         self.execution_action = action
         self.reason = reason
-        self.market = "BTC-EUR"
+        self.market = market
         self.execution_event_id = execution_event_id
+        self.signal_strength = signal_strength
+        self.spread_pct = spread_pct
 
 
 class AccountingBaselineTests(unittest.TestCase):
@@ -495,6 +507,224 @@ class AccountingBaselineTests(unittest.TestCase):
         self.assertAlmostEqual(engine.available_balance, available_before, places=10)
         self.assertEqual(len(self._ledger_rows()), 0)
 
+    def test_valid_checkpoint_loads_successfully(self):
+        checkpoint_path = self.tmp_path / "valid_open_position_state.json"
+        valid_checkpoint = {
+            "version": 1,
+            "timestamp_utc": "2026-09-06T00:00:00+00:00",
+            "processed_successful_execution_ids": ["FILL-001"],
+            "account_state": {
+                "starting_balance": 10000.0,
+                "available_balance": 9000.0,
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "equity": 10000.0,
+                "cumulative_fees": 0.0,
+                "cumulative_slippage": 0.0,
+                "peak_equity": 10000.0,
+                "current_drawdown": 0.0,
+                "maximum_drawdown": 0.0,
+            },
+            "counters": {"trade_counter": 1, "order_counter": 2, "fill_counter": 2},
+            "last_mark_price": 100.0,
+            "open_position": {
+                "trade_id": "TRD-000001",
+                "symbol": "BTC-EUR",
+                "side": "LONG",
+                "entry_timestamp_utc": "2026-09-06T00:00:00+00:00",
+                "entry_price": 100.0,
+                "entry_execution_price": 100.0,
+                "position_size": 10.0,
+                "entry_fee": 0.0,
+                "entry_slippage": 0.0,
+                "strategy": "baseline",
+                "signal": "entry_signal",
+                "confidence": 0.5,
+            },
+        }
+        checkpoint_path.write_text(__import__("json").dumps(valid_checkpoint), encoding="utf-8")
+
+        engine = AccountingEngine(
+            trade_ledger_path=str(self.tmp_path / "trade_ledger.csv"),
+            account_state_path=str(self.tmp_path / "account_state.csv"),
+            open_position_state_path=str(checkpoint_path),
+            logger=self.logger,
+            enabled=True,
+            starting_balance=10000.0,
+        )
+
+        self.assertEqual(engine.recovery_status, "VALID")
+        self.assertEqual(engine._processed_successful_execution_ids, {"FILL-001"})
+        self.assertIsNotNone(engine.open_position)
+        self.assertEqual(engine.open_position.trade_id, "TRD-000001")
+        self.assertAlmostEqual(engine.available_balance, 9000.0, places=10)
+
+    def test_missing_checkpoint_fails_closed(self):
+        checkpoint_path = self.tmp_path / "missing_checkpoint.json"
+        if checkpoint_path.exists():
+            checkpoint_path.unlink()
+
+        trade_ledger = self.tmp_path / "trade_ledger.csv"
+        trade_ledger.write_text("trade_id,timestamp_utc,symbol,side,entry_price,exit_price,position_size,gross_pnl,fees,slippage,net_pnl,holding_time_seconds,strategy,signal,confidence,close_reason,entry_timestamp_utc,exit_timestamp_utc\nTRD-000001,2026-09-06T00:00:00+00:00,BTC-EUR,LONG,100.0,110.0,10.0,100.0,0.0,0.0,100.0,60.0,baseline,momentum,0.5,close,2026-09-06T00:00:00+00:00,2026-09-06T00:01:00+00:00\n", encoding="utf-8")
+
+        engine = AccountingEngine(
+            trade_ledger_path=str(trade_ledger),
+            account_state_path=str(self.tmp_path / "account_state.csv"),
+            open_position_state_path=str(checkpoint_path),
+            logger=self.logger,
+            enabled=True,
+            starting_balance=10000.0,
+        )
+
+        self.assertEqual(engine.recovery_status, "BLOCKED_ON_DIVERGENCE")
+
+    def test_corrupt_json_fails_closed(self):
+        checkpoint_path = self.tmp_path / "corrupt_checkpoint.json"
+        checkpoint_path.write_text('{"version": 1, "broken": ', encoding="utf-8")
+
+        engine = AccountingEngine(
+            trade_ledger_path=str(self.tmp_path / "trade_ledger.csv"),
+            account_state_path=str(self.tmp_path / "account_state.csv"),
+            open_position_state_path=str(checkpoint_path),
+            logger=self.logger,
+            enabled=True,
+            starting_balance=10000.0,
+        )
+
+        self.assertEqual(engine.recovery_status, "BLOCKED_ON_DIVERGENCE")
+
+    def test_missing_processed_successful_execution_ids_fails_closed(self):
+        checkpoint_path = self.tmp_path / "missing_execution_ids.json"
+        checkpoint_path.write_text(
+            __import__("json").dumps({
+                "version": 1,
+                "timestamp_utc": "2026-09-06T00:00:00+00:00",
+                "account_state": {
+                    "starting_balance": 10000.0,
+                    "available_balance": 9000.0,
+                    "realized_pnl": 0.0,
+                    "unrealized_pnl": 0.0,
+                    "equity": 9000.0,
+                    "cumulative_fees": 0.0,
+                    "cumulative_slippage": 0.0,
+                    "peak_equity": 10000.0,
+                    "current_drawdown": 0.0,
+                    "maximum_drawdown": 0.0,
+                },
+                "counters": {"trade_counter": 1, "order_counter": 2, "fill_counter": 2},
+                "last_mark_price": 100.0,
+                "open_position": None,
+            }),
+            encoding="utf-8",
+        )
+
+        engine = AccountingEngine(
+            trade_ledger_path=str(self.tmp_path / "trade_ledger.csv"),
+            account_state_path=str(self.tmp_path / "account_state.csv"),
+            open_position_state_path=str(checkpoint_path),
+            logger=self.logger,
+            enabled=True,
+            starting_balance=10000.0,
+        )
+
+        self.assertEqual(engine.recovery_status, "BLOCKED_ON_DIVERGENCE")
+
+    def test_invalid_execution_id_values_fail_closed(self):
+        checkpoint_path = self.tmp_path / "invalid_execution_ids.json"
+        checkpoint_path.write_text(
+            __import__("json").dumps({
+                "version": 1,
+                "timestamp_utc": "2026-09-06T00:00:00+00:00",
+                "processed_successful_execution_ids": [123, "FILL-001"],
+                "account_state": {
+                    "starting_balance": 10000.0,
+                    "available_balance": 10000.0,
+                    "realized_pnl": 0.0,
+                    "unrealized_pnl": 0.0,
+                    "equity": 10000.0,
+                    "cumulative_fees": 0.0,
+                    "cumulative_slippage": 0.0,
+                    "peak_equity": 10000.0,
+                    "current_drawdown": 0.0,
+                    "maximum_drawdown": 0.0,
+                },
+                "counters": {"trade_counter": 0, "order_counter": 0, "fill_counter": 0},
+                "last_mark_price": None,
+                "open_position": None,
+            }),
+            encoding="utf-8",
+        )
+
+        engine = AccountingEngine(
+            trade_ledger_path=str(self.tmp_path / "trade_ledger.csv"),
+            account_state_path=str(self.tmp_path / "account_state.csv"),
+            open_position_state_path=str(checkpoint_path),
+            logger=self.logger,
+            enabled=True,
+            starting_balance=10000.0,
+        )
+
+        self.assertEqual(engine.recovery_status, "BLOCKED_ON_DIVERGENCE")
+
+    def test_internally_inconsistent_accounting_state_fails_closed(self):
+        checkpoint_path = self.tmp_path / "inconsistent_checkpoint.json"
+        checkpoint_path.write_text(
+            __import__("json").dumps({
+                "version": 1,
+                "timestamp_utc": "2026-09-06T00:00:00+00:00",
+                "processed_successful_execution_ids": ["FILL-001"],
+                "account_state": {
+                    "starting_balance": 10000.0,
+                    "available_balance": 9000.0,
+                    "realized_pnl": 0.0,
+                    "unrealized_pnl": 0.0,
+                    "equity": 10000.0,
+                    "cumulative_fees": 0.0,
+                    "cumulative_slippage": 0.0,
+                    "peak_equity": 10000.0,
+                    "current_drawdown": 0.0,
+                    "maximum_drawdown": 0.0,
+                },
+                "counters": {"trade_counter": 1, "order_counter": 2, "fill_counter": 2},
+                "last_mark_price": 100.0,
+                "open_position": None,
+            }),
+            encoding="utf-8",
+        )
+
+        engine = AccountingEngine(
+            trade_ledger_path=str(self.tmp_path / "trade_ledger.csv"),
+            account_state_path=str(self.tmp_path / "account_state.csv"),
+            open_position_state_path=str(checkpoint_path),
+            logger=self.logger,
+            enabled=True,
+            starting_balance=10000.0,
+        )
+
+        self.assertEqual(engine.recovery_status, "BLOCKED_ON_DIVERGENCE")
+
+    def test_atomic_persistence_writes_complete_json(self):
+        engine = self._engine(fee_rate=0.0, slippage_bps=0.0)
+        engine._persist_runtime_state()
+
+        path = engine.open_position_state_path
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = __import__("json").load(handle)
+
+        self.assertIn("processed_successful_execution_ids", payload)
+        self.assertIn("account_state", payload)
+        self.assertIn("open_position", payload)
+
+    def test_recovery_does_not_create_financial_effects(self):
+        engine = self._engine(fee_rate=0.0, slippage_bps=0.0)
+        before_balance = engine.available_balance
+        before_realized = engine.realized_pnl
+
+        engine._restore_state_on_startup()
+
+        self.assertAlmostEqual(engine.available_balance, before_balance, places=10)
+        self.assertAlmostEqual(engine.realized_pnl, before_realized, places=10)
+
     def test_duplicate_fill_does_not_close_position_twice_or_duplicate_trade(self):
         engine = self._engine(fee_rate=0.001, slippage_bps=0.0)
 
@@ -532,6 +762,321 @@ class AccountingBaselineTests(unittest.TestCase):
         self.assertAlmostEqual(engine.cumulative_fees, fees_after_first, places=10)
         self.assertAlmostEqual(engine.cumulative_slippage, slippage_after_first, places=10)
         self.assertEqual(len(self._ledger_rows()), 1)
+
+    def test_accounting_decision_status_tracks_accepted_duplicate_and_rejected_paths(self):
+        engine = self._engine(fee_rate=0.0, slippage_bps=0.0)
+        accepted_event = ExecutionEventObj(
+            "SIMULATED_ORDER_PREPARED",
+            "entry_signal",
+            execution_event_id="FILL-STATUS-ACCEPTED",
+        )
+
+        accepted = engine.process_execution(
+            accepted_event,
+            bid=100.0,
+            ask=100.0,
+            timestamp_utc="2026-09-06T00:00:00+00:00",
+        )
+        self.assertIsNone(accepted)
+        self.assertEqual(engine.last_decision.status, "ACCEPTED")
+        self.assertEqual(engine.last_decision.execution_event_id, "FILL-STATUS-ACCEPTED")
+
+        duplicate = engine.process_execution(
+            accepted_event,
+            bid=101.0,
+            ask=101.0,
+            timestamp_utc="2026-09-06T00:00:01+00:00",
+        )
+        self.assertIsNone(duplicate)
+        self.assertEqual(engine.last_decision.status, "DUPLICATE")
+        self.assertEqual(engine.last_decision.execution_event_id, "FILL-STATUS-ACCEPTED")
+
+        rejected = engine.process_execution(
+            ExecutionEventObj("SKIPPED", "risk_rejected", execution_event_id="FILL-STATUS-REJECTED"),
+            bid=101.0,
+            ask=102.0,
+            timestamp_utc="2026-09-06T00:00:02+00:00",
+        )
+        self.assertIsNone(rejected)
+        self.assertEqual(engine.last_decision.status, "REJECTED")
+        self.assertEqual(engine.last_decision.execution_event_id, "FILL-STATUS-REJECTED")
+
+    def test_accounting_decision_status_tracks_failed_execution(self):
+        engine = self._engine(fee_rate=0.0, slippage_bps=0.0)
+        failed = engine.process_execution(
+            ExecutionEventObj("FAILED", "simulated_order_failed", execution_event_id="FILL-STATUS-FAILED"),
+            bid=100.0,
+            ask=100.0,
+            timestamp_utc="2026-09-06T00:00:00+00:00",
+        )
+
+        self.assertIsNone(failed)
+        self.assertEqual(engine.last_decision.status, "FAILED")
+        self.assertEqual(engine.last_decision.execution_event_id, "FILL-STATUS-FAILED")
+
+    def test_position_manager_accepts_only_accounting_decision_status_accepted(self):
+        manager = PositionManager(
+            output_path=str(self.tmp_path / "gated_positions.csv"),
+            logger=self.logger,
+            enabled=True,
+            max_hold_events=2,
+        )
+
+        accepted = manager.process_accounting_decision(
+            AccountingDecision(
+                status="ACCEPTED",
+                execution_event_id="FILL-ACCEPTED-1",
+                execution_action="SIMULATED_ORDER_PREPARED",
+                reason="accepted",
+                financial_effect_applied=True,
+                market="BTC-EUR",
+                signal_strength=0.8,
+                spread_pct=0.1,
+            )
+        )
+
+        self.assertIsNotNone(accepted)
+        self.assertEqual(accepted.lifecycle_action, "OPENED")
+
+    def test_position_manager_ignores_duplicate_rejected_and_failed_accounting_decisions(self):
+        manager = PositionManager(
+            output_path=str(self.tmp_path / "gated_positions.csv"),
+            logger=self.logger,
+            enabled=True,
+            max_hold_events=2,
+        )
+
+        accepted = manager.process_accounting_decision(
+            AccountingDecision(
+                status="ACCEPTED",
+                execution_event_id="FILL-ACCEPTED-2",
+                execution_action="SIMULATED_ORDER_PREPARED",
+                reason="accepted",
+                financial_effect_applied=True,
+                market="BTC-EUR",
+                signal_strength=0.7,
+                spread_pct=0.05,
+            )
+        )
+        self.assertIsNotNone(accepted)
+
+        duplicate = manager.process_accounting_decision(
+            AccountingDecision(
+                status="DUPLICATE",
+                execution_event_id="FILL-ACCEPTED-2",
+                execution_action="SIMULATED_ORDER_PREPARED",
+                reason="duplicate_execution_event_id",
+                financial_effect_applied=False,
+                market="BTC-EUR",
+                signal_strength=0.7,
+                spread_pct=0.05,
+            )
+        )
+        rejected = manager.process_accounting_decision(
+            AccountingDecision(
+                status="REJECTED",
+                execution_event_id="FILL-REJECTED-1",
+                execution_action="SKIPPED",
+                reason="risk_rejected",
+                financial_effect_applied=False,
+                market="BTC-EUR",
+                signal_strength=0.4,
+                spread_pct=0.03,
+            )
+        )
+        failed = manager.process_accounting_decision(
+            AccountingDecision(
+                status="FAILED",
+                execution_event_id="FILL-FAILED-1",
+                execution_action="FAILED",
+                reason="simulated_order_failed",
+                financial_effect_applied=False,
+                market="BTC-EUR",
+                signal_strength=0.2,
+                spread_pct=0.01,
+            )
+        )
+
+        self.assertIsNone(duplicate)
+        self.assertIsNone(rejected)
+        self.assertIsNone(failed)
+        self.assertIsNotNone(manager._active_position)
+
+    def test_position_manager_rebuild_from_accounting_no_open_position(self):
+        engine = self._engine(fee_rate=0.0, slippage_bps=0.0)
+        manager = PositionManager(
+            output_path=str(self.tmp_path / "rebuild_none.csv"),
+            logger=self.logger,
+            enabled=True,
+            max_hold_events=2,
+        )
+        manager._active_position = {"position_id": "stale", "market": "ETH-EUR", "hold_events": 99}
+
+        result = manager.rebuild_from_accounting(engine)
+
+        self.assertIsNone(result)
+        self.assertIsNone(manager._active_position)
+
+    def test_position_manager_rebuild_from_accounting_open_position_maps_required_fields(self):
+        engine = self._engine(fee_rate=0.0, slippage_bps=0.0)
+        self._open(engine, ask=100.0, bid=99.0, ts="2026-09-06T00:00:00+00:00")
+        manager = PositionManager(
+            output_path=str(self.tmp_path / "rebuild_open.csv"),
+            logger=self.logger,
+            enabled=True,
+            max_hold_events=2,
+        )
+        manager._active_position = {"position_id": "stale", "market": "ETH-EUR", "hold_events": 99}
+
+        result = manager.rebuild_from_accounting(engine)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(manager._active_position["market"], engine.open_position.symbol)
+        self.assertEqual(manager._active_position["side"], engine.open_position.side)
+        self.assertEqual(manager._active_position["entry_time_utc"], engine.open_position.entry_timestamp_utc)
+        self.assertAlmostEqual(manager._active_position["entry_price"], engine.open_position.entry_price, places=10)
+        self.assertAlmostEqual(manager._active_position["position_size"], engine.open_position.position_size, places=10)
+        self.assertEqual(manager._active_position["trade_id"], engine.open_position.trade_id)
+        self.assertEqual(manager._active_position["hold_events"], 0)
+
+    def test_position_manager_rebuild_from_accounting_replaces_stale_state(self):
+        engine = self._engine(fee_rate=0.0, slippage_bps=0.0)
+        self._open(engine, ask=100.0, bid=99.0, ts="2026-09-06T00:00:00+00:00")
+        manager = PositionManager(
+            output_path=str(self.tmp_path / "rebuild_replace.csv"),
+            logger=self.logger,
+            enabled=True,
+            max_hold_events=2,
+        )
+        manager._active_position = {"position_id": "stale", "market": "ETH-EUR", "hold_events": 7, "entry_time_utc": "1999-01-01T00:00:00+00:00"}
+
+        manager.rebuild_from_accounting(engine)
+
+        self.assertEqual(manager._active_position["market"], "BTC-EUR")
+        self.assertEqual(manager._active_position["hold_events"], 0)
+        self.assertEqual(manager._active_position["trade_id"], engine.open_position.trade_id)
+
+    def test_position_manager_rebuild_from_accounting_rejects_invalid_input(self):
+        manager = PositionManager(
+            output_path=str(self.tmp_path / "rebuild_invalid.csv"),
+            logger=self.logger,
+            enabled=True,
+            max_hold_events=2,
+        )
+        manager._active_position = {"position_id": "stale", "market": "BTC-EUR", "hold_events": 7}
+
+        result = manager.rebuild_from_accounting(None)
+
+        self.assertIsNone(result)
+        self.assertIsNone(manager._active_position)
+
+    def test_position_manager_rebuild_from_accounting_is_deterministic_and_idempotent(self):
+        engine = self._engine(fee_rate=0.0, slippage_bps=0.0)
+        self._open(engine, ask=100.0, bid=99.0, ts="2026-09-06T00:00:00+00:00")
+        manager = PositionManager(
+            output_path=str(self.tmp_path / "rebuild_idempotent.csv"),
+            logger=self.logger,
+            enabled=True,
+            max_hold_events=2,
+        )
+
+        first = manager.rebuild_from_accounting(engine)
+        second = manager.rebuild_from_accounting(engine)
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertEqual(first, second)
+        self.assertEqual(manager._active_position["market"], "BTC-EUR")
+        self.assertEqual(manager._active_position["trade_id"], engine.open_position.trade_id)
+
+    def test_market_data_pipeline_only_updates_position_for_accepted_accounting_decisions(self):
+        engine = MarketDataEngine(
+            feature_engine_enabled=False,
+            strategy_engine_enabled=False,
+            risk_engine_enabled=False,
+            execution_engine_enabled=False,
+            position_manager_enabled=True,
+            accounting_engine_enabled=True,
+            accounting_trade_ledger_path=str(self.tmp_path / "trade_ledger.csv"),
+            accounting_account_state_path=str(self.tmp_path / "account_state.csv"),
+            accounting_open_position_state_path=str(self.tmp_path / "account_state.json"),
+        )
+
+        accepted_decision = AccountingDecision(
+            status="ACCEPTED",
+            execution_event_id="FILL-GATED-ACCEPTED",
+            execution_action="SIMULATED_ORDER_PREPARED",
+            reason="accepted",
+            financial_effect_applied=True,
+            market="BTC-EUR",
+            signal_strength=0.9,
+            spread_pct=0.05,
+        )
+        result = engine.update_position_manager(accepted_decision)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.lifecycle_action, "OPENED")
+
+        duplicate = engine.update_position_manager(
+            AccountingDecision(
+                status="DUPLICATE",
+                execution_event_id="FILL-GATED-ACCEPTED",
+                execution_action="SIMULATED_ORDER_PREPARED",
+                reason="duplicate_execution_event_id",
+                financial_effect_applied=False,
+                market="BTC-EUR",
+                signal_strength=0.9,
+                spread_pct=0.05,
+            )
+        )
+        self.assertIsNone(duplicate)
+
+    def test_position_manager_raw_execution_event_is_disabled(self):
+        manager = PositionManager(
+            output_path=str(self.tmp_path / "raw_execution_blocked.csv"),
+            logger=self.logger,
+            enabled=True,
+            max_hold_events=2,
+        )
+
+        raw_event = ExecutionEventObj(
+            "SIMULATED_ORDER_PREPARED",
+            "raw_execution_bypass",
+            execution_event_id="RAW-BYPASS",
+            market="BTC-EUR",
+            signal_strength=0.9,
+            spread_pct=0.05,
+        )
+
+        with self.assertRaises(RuntimeError):
+            manager.process(raw_event)
+
+        self.assertIsNone(manager._active_position)
+
+    def test_market_data_update_position_manager_rejects_raw_execution_event(self):
+        engine = MarketDataEngine(
+            feature_engine_enabled=False,
+            strategy_engine_enabled=False,
+            risk_engine_enabled=False,
+            execution_engine_enabled=False,
+            position_manager_enabled=True,
+            accounting_engine_enabled=True,
+            accounting_trade_ledger_path=str(self.tmp_path / "trade_ledger_raw.csv"),
+            accounting_account_state_path=str(self.tmp_path / "account_state_raw.csv"),
+            accounting_open_position_state_path=str(self.tmp_path / "account_state_raw.json"),
+        )
+
+        raw_event = ExecutionEventObj(
+            "SIMULATED_ORDER_PREPARED",
+            "raw_execution_bypass",
+            execution_event_id="RAW-BYPASS-PIPELINE",
+            market="BTC-EUR",
+            signal_strength=0.9,
+            spread_pct=0.05,
+        )
+
+        result = engine.update_position_manager(raw_event)
+        self.assertIsNone(result)
 
     def test_restart_then_replay_same_fill_remains_idempotent(self):
         engine = self._engine(fee_rate=0.0, slippage_bps=0.0)

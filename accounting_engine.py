@@ -165,6 +165,18 @@ class AccountSnapshot:
         ]
 
 
+@dataclass
+class AccountingDecision:
+    status: str
+    execution_event_id: str | None = None
+    execution_action: str | None = None
+    reason: str | None = None
+    financial_effect_applied: bool = False
+    market: str | None = None
+    signal_strength: float | None = None
+    spread_pct: float | None = None
+
+
 class AccountingEngine:
     """Minimal simulation-only accounting model with explicit order/fill/position/trade stages."""
 
@@ -205,6 +217,17 @@ class AccountingEngine:
         self._processed_successful_execution_ids: set[str] = set()
         self._processed_successful_execution_id_order: list[str] = []
         self._max_processed_successful_ids = 10000
+        self.recovery_status = "VALID"
+        self.last_decision = AccountingDecision(
+            status="REJECTED",
+            execution_event_id=None,
+            execution_action=None,
+            reason="not_evaluated",
+            financial_effect_applied=False,
+            market=None,
+            signal_strength=None,
+            spread_pct=None,
+        )
 
         self.open_position: OpenPosition | None = None
 
@@ -236,14 +259,31 @@ class AccountingEngine:
     def _restore_state_on_startup(self) -> None:
         self._trade_counter = max(self._trade_counter, self._max_trade_counter_from_ledger())
 
-        if not os.path.exists(self.open_position_state_path):
+        checkpoint_exists = os.path.exists(self.open_position_state_path)
+        prior_persistence_exists = self._has_persisted_financial_state()
+
+        if not checkpoint_exists:
+            if prior_persistence_exists:
+                self.recovery_status = "BLOCKED_ON_DIVERGENCE"
+                self.logger.error(
+                    "accounting_state_restore_error path=%s error=checkpoint_missing_with_prior_state",
+                    self.open_position_state_path,
+                )
+                return
+            self.recovery_status = "VALID"
             return
 
         try:
             with open(self.open_position_state_path, "r", encoding="utf-8") as handle:
                 state = json.load(handle)
         except Exception as exc:
+            self.recovery_status = "BLOCKED_ON_DIVERGENCE"
             self.logger.error("accounting_state_restore_error path=%s error=%s", self.open_position_state_path, exc)
+            return
+
+        if not self._validate_runtime_checkpoint(state):
+            self.recovery_status = "BLOCKED_ON_DIVERGENCE"
+            self.logger.error("accounting_runtime_checkpoint_invalid path=%s", self.open_position_state_path)
             return
 
         account_state = state.get("account_state") or {}
@@ -292,6 +332,7 @@ class AccountingEngine:
             )
             self._trade_counter = max(self._trade_counter, _trade_number(self.open_position.trade_id))
 
+        self.recovery_status = "VALID"
         self.logger.info(
             "accounting_state_restored path=%s open_position=%s realized_pnl=%.10f available_balance=%.10f",
             self.open_position_state_path,
@@ -336,41 +377,137 @@ class AccountingEngine:
         confidence: float | None = None,
     ) -> ClosedTrade | None:
         if not self.enabled:
+            self.last_decision = AccountingDecision(
+                status="REJECTED",
+                execution_event_id=getattr(execution_event, "execution_event_id", None),
+                execution_action=getattr(execution_event, "execution_action", None),
+                reason="accounting_engine_disabled",
+                financial_effect_applied=False,
+                market=getattr(execution_event, "market", None),
+                signal_strength=getattr(execution_event, "signal_strength", None),
+                spread_pct=getattr(execution_event, "spread_pct", None),
+            )
             return None
-
-        self.update_mark_to_market(bid=bid, ask=ask, timestamp_utc=timestamp_utc)
 
         if execution_event is None:
-            return None
-
-        if execution_event.execution_action != "SIMULATED_ORDER_PREPARED":
+            self.last_decision = AccountingDecision(
+                status="REJECTED",
+                execution_event_id=None,
+                execution_action=None,
+                reason="missing_execution_event",
+                financial_effect_applied=False,
+                market=None,
+                signal_strength=None,
+                spread_pct=None,
+            )
             return None
 
         ts = timestamp_utc or _now_iso()
-        successful_event_id = self._extract_successful_execution_id(execution_event=execution_event, fallback_timestamp_utc=ts)
-        if successful_event_id in self._processed_successful_execution_ids:
-            self.logger.info("accounting_duplicate_successful_fill_ignored id=%s", successful_event_id)
-            return None
+        effective_event_id = self._extract_successful_execution_id(
+            execution_event=execution_event,
+            fallback_timestamp_utc=ts,
+        )
 
-        if self.open_position is None:
-            opened = self._open_position_from_fill(
-                execution_event=execution_event,
-                ask=ask,
-                timestamp_utc=ts,
-                signal=signal,
-                confidence=confidence,
+        if execution_event.execution_action != "SIMULATED_ORDER_PREPARED":
+            status = "FAILED" if execution_event.execution_action == "FAILED" else "REJECTED"
+            reason = execution_event.reason or "non_financial_execution"
+            self.last_decision = AccountingDecision(
+                status=status,
+                execution_event_id=effective_event_id,
+                execution_action=execution_event.execution_action,
+                reason=reason,
+                financial_effect_applied=False,
+                market=getattr(execution_event, "market", None),
+                signal_strength=getattr(execution_event, "signal_strength", None),
+                spread_pct=getattr(execution_event, "spread_pct", None),
             )
-            if not opened:
-                return None
-            self._remember_processed_successful_execution_id(successful_event_id)
-            self.update_mark_to_market(bid=bid, ask=ask, timestamp_utc=ts)
+            self.logger.info(
+                "accounting_decision status=%s execution_event_id=%s action=%s reason=%s",
+                status,
+                effective_event_id,
+                execution_event.execution_action,
+                reason,
+            )
             return None
 
-        closed_trade = self._close_position_from_fill(execution_event=execution_event, bid=bid, timestamp_utc=ts)
-        self._persist_closed_trade(closed_trade)
-        self._remember_processed_successful_execution_id(successful_event_id)
-        self.update_mark_to_market(bid=bid, ask=ask, timestamp_utc=ts)
-        return closed_trade
+        if effective_event_id in self._processed_successful_execution_ids:
+            self.last_decision = AccountingDecision(
+                status="DUPLICATE",
+                execution_event_id=effective_event_id,
+                execution_action=execution_event.execution_action,
+                reason="duplicate_execution_event_id",
+                financial_effect_applied=False,
+                market=getattr(execution_event, "market", None),
+                signal_strength=getattr(execution_event, "signal_strength", None),
+                spread_pct=getattr(execution_event, "spread_pct", None),
+            )
+            self.logger.info("accounting_duplicate_successful_fill_ignored id=%s", effective_event_id)
+            return None
+
+        try:
+            if self.open_position is None:
+                opened = self._open_position_from_fill(
+                    execution_event=execution_event,
+                    ask=ask,
+                    timestamp_utc=ts,
+                    signal=signal,
+                    confidence=confidence,
+                )
+                if not opened:
+                    self.last_decision = AccountingDecision(
+                        status="FAILED",
+                        execution_event_id=effective_event_id,
+                        execution_action=execution_event.execution_action,
+                        reason="open_position_rejected",
+                        financial_effect_applied=False,
+                        market=getattr(execution_event, "market", None),
+                        signal_strength=getattr(execution_event, "signal_strength", None),
+                        spread_pct=getattr(execution_event, "spread_pct", None),
+                    )
+                    return None
+
+                self._remember_processed_successful_execution_id(effective_event_id)
+                self.update_mark_to_market(bid=bid, ask=ask, timestamp_utc=ts)
+                self.last_decision = AccountingDecision(
+                    status="ACCEPTED",
+                    execution_event_id=effective_event_id,
+                    execution_action=execution_event.execution_action,
+                    reason=execution_event.reason or "accepted",
+                    financial_effect_applied=True,
+                    market=getattr(execution_event, "market", None),
+                    signal_strength=getattr(execution_event, "signal_strength", None),
+                    spread_pct=getattr(execution_event, "spread_pct", None),
+                )
+                return None
+
+            closed_trade = self._close_position_from_fill(execution_event=execution_event, bid=bid, timestamp_utc=ts)
+            self._persist_closed_trade(closed_trade)
+            self._remember_processed_successful_execution_id(effective_event_id)
+            self.update_mark_to_market(bid=bid, ask=ask, timestamp_utc=ts)
+            self.last_decision = AccountingDecision(
+                status="ACCEPTED",
+                execution_event_id=effective_event_id,
+                execution_action=execution_event.execution_action,
+                reason=execution_event.reason or "accepted",
+                financial_effect_applied=True,
+                market=getattr(execution_event, "market", None),
+                signal_strength=getattr(execution_event, "signal_strength", None),
+                spread_pct=getattr(execution_event, "spread_pct", None),
+            )
+            return closed_trade
+        except RuntimeError as exc:
+            self.last_decision = AccountingDecision(
+                status="FAILED",
+                execution_event_id=effective_event_id,
+                execution_action=execution_event.execution_action,
+                reason=str(exc),
+                financial_effect_applied=False,
+                market=getattr(execution_event, "market", None),
+                signal_strength=getattr(execution_event, "signal_strength", None),
+                spread_pct=getattr(execution_event, "spread_pct", None),
+            )
+            self.logger.warning("accounting_execution_failed id=%s reason=%s", effective_event_id, exc)
+            return None
 
     def _open_position_from_fill(
         self,
@@ -449,6 +586,7 @@ class AccountingEngine:
             signal=order.signal,
             confidence=confidence,
         )
+        self._recompute_equity(open_market_value=self.open_position.entry_execution_price * self.open_position.position_size)
 
         self.logger.info(
             "accounting_open trade_id=%s order_id=%s fill_id=%s entry_price=%.10f size=%.10f fee=%.10f",
@@ -601,8 +739,124 @@ class AccountingEngine:
                 "confidence": self.open_position.confidence,
             }
 
-        with open(self.open_position_state_path, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        _atomic_write_json(self.open_position_state_path, state)
+        self.recovery_status = "VALID"
+
+    def _validate_runtime_checkpoint(self, state: object) -> bool:
+        if not isinstance(state, dict):
+            return False
+
+        if state.get("version") != 1:
+            return False
+
+        account_state = state.get("account_state")
+        if not isinstance(account_state, dict):
+            return False
+
+        required_account_keys = {
+            "starting_balance",
+            "available_balance",
+            "realized_pnl",
+            "unrealized_pnl",
+            "equity",
+            "cumulative_fees",
+            "cumulative_slippage",
+            "peak_equity",
+            "current_drawdown",
+            "maximum_drawdown",
+        }
+        if not required_account_keys.issubset(account_state.keys()):
+            return False
+
+        counters = state.get("counters")
+        if not isinstance(counters, dict):
+            return False
+
+        for key in ("trade_counter", "order_counter", "fill_counter"):
+            if key not in counters:
+                return False
+            try:
+                int(counters[key])
+            except (TypeError, ValueError):
+                return False
+
+        processed_ids = state.get("processed_successful_execution_ids")
+        if not isinstance(processed_ids, list):
+            return False
+        if any(not isinstance(item, str) or not item.strip() for item in processed_ids):
+            return False
+
+        open_position = state.get("open_position")
+        if open_position is not None and not isinstance(open_position, dict):
+            return False
+        if isinstance(open_position, dict):
+            required_position_keys = {
+                "trade_id",
+                "symbol",
+                "side",
+                "entry_timestamp_utc",
+                "entry_price",
+                "entry_execution_price",
+                "position_size",
+                "entry_fee",
+                "entry_slippage",
+                "strategy",
+                "signal",
+            }
+            if not required_position_keys.issubset(open_position.keys()):
+                return False
+            if float(open_position["entry_price"]) <= 0:
+                return False
+            if float(open_position["position_size"]) <= 0:
+                return False
+
+        try:
+            float(account_state.get("starting_balance"))
+            float(account_state.get("available_balance"))
+            float(account_state.get("realized_pnl"))
+            float(account_state.get("unrealized_pnl"))
+            float(account_state.get("equity"))
+            float(account_state.get("cumulative_fees"))
+            float(account_state.get("cumulative_slippage"))
+            float(account_state.get("peak_equity"))
+            float(account_state.get("current_drawdown"))
+            float(account_state.get("maximum_drawdown"))
+        except (TypeError, ValueError):
+            return False
+
+        if float(account_state.get("current_drawdown")) < 0:
+            return False
+        if float(account_state.get("maximum_drawdown")) < 0:
+            return False
+
+        if isinstance(open_position, dict):
+            position_size = float(open_position.get("position_size", 0.0))
+            mark_price = _float_or_none(state.get("last_mark_price"))
+            if mark_price is None or mark_price <= 0:
+                mark_price = float(open_position.get("entry_price", 0.0))
+            open_market_value = mark_price * position_size
+            eq_expected = float(account_state.get("available_balance")) + open_market_value
+            if abs(float(account_state.get("equity")) - eq_expected) > 1e-9:
+                return False
+
+            entry_price = float(open_position.get("entry_price", 0.0))
+            if abs(float(account_state.get("unrealized_pnl")) - ((mark_price - entry_price) * position_size)) > 1e-9:
+                return False
+        else:
+            if abs(float(account_state.get("equity")) - float(account_state.get("available_balance"))) > 1e-9:
+                return False
+
+        return True
+
+    def _has_persisted_financial_state(self) -> bool:
+        for path in [self.trade_ledger_path, self.account_state_path]:
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", newline="", encoding="utf-8") as handle:
+                rows = list(csv.reader(handle))
+            if len(rows) > 1:
+                return True
+        return False
 
     def _max_trade_counter_from_ledger(self) -> int:
         if not os.path.exists(self.trade_ledger_path):
@@ -668,6 +922,29 @@ def _fmt(value: float | None) -> str:
     if value is None:
         return ""
     return f"{value:.10f}"
+
+
+def _atomic_write_json(path: str, payload: dict) -> None:
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    temp_path = f"{path}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+    os.replace(temp_path, path)
+
+    try:
+        dir_fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
 
 
 def _float_or_none(value) -> float | None:

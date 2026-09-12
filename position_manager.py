@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from accounting_engine import AccountingDecision
 from execution_engine import ExecutionEvent
 
 
@@ -94,6 +95,13 @@ class PositionManager:
             self.logger.info("position_output_initialized path=%s", self.output_path)
 
     def process(self, execution_event: ExecutionEvent, event_time_utc: str | None = None) -> PositionLedgerEvent | None:
+        raise RuntimeError("PositionManager raw ExecutionEvent path is disabled; use process_accounting_decision() only.")
+
+    def _process_accepted_execution_event(
+        self,
+        execution_event: ExecutionEvent,
+        event_time_utc: str | None = None,
+    ) -> PositionLedgerEvent | None:
         if not self.enabled:
             return None
 
@@ -184,6 +192,98 @@ class PositionManager:
         )
         self._persist(event)
         return event
+
+    def process_accounting_decision(
+        self,
+        decision: AccountingDecision | None,
+        event_time_utc: str | None = None,
+    ) -> PositionLedgerEvent | None:
+        if not self.enabled or decision is None:
+            return None
+
+        if decision.status != "ACCEPTED" or not decision.financial_effect_applied:
+            self.logger.info(
+                "position_decision_ignored status=%s execution_event_id=%s reason=%s",
+                decision.status,
+                decision.execution_event_id,
+                decision.reason,
+            )
+            return None
+
+        execution_event = ExecutionEvent(
+            execution_event_id=decision.execution_event_id or "accounting_decision_accepted",
+            timestamp_utc=event_time_utc or datetime.now(timezone.utc).isoformat(),
+            market=decision.market or "UNKNOWN",
+            strategy_action="ACCOUNTING_GATED",
+            risk_action="ACCOUNTING_GATED",
+            execution_action=decision.execution_action or "SIMULATED_ORDER_PREPARED",
+            reason=decision.reason or "accounting_accepted",
+            signal_strength=float(decision.signal_strength) if decision.signal_strength is not None else 0.0,
+            spread_pct=float(decision.spread_pct) if decision.spread_pct is not None else 0.0,
+        )
+        return self._process_accepted_execution_event(execution_event, event_time_utc=event_time_utc)
+
+    def rebuild_from_accounting(self, accounting_engine) -> dict | None:
+        """Rebuild only the derived current open-position projection from authoritative accounting state.
+
+        This method intentionally ignores the PositionManager CSV history, execution journal,
+        raw ExecutionEvent data, and wall-clock timestamps. It derives the projection only from
+        accounting_engine.open_position and replaces any stale local state completely.
+        """
+        if not self.enabled or accounting_engine is None:
+            self.logger.warning("position_rebuild_rejected reason=missing_accounting_state")
+            self._active_position = None
+            return None
+
+        open_position = getattr(accounting_engine, "open_position", None)
+        if open_position is None:
+            self._active_position = None
+            self.logger.info("position_rebuild state=inactive")
+            return None
+
+        try:
+            market = str(open_position.symbol)
+            side = str(open_position.side)
+            entry_time_utc = str(open_position.entry_timestamp_utc)
+            entry_price = float(open_position.entry_price)
+            position_size = float(open_position.position_size)
+            trade_id = str(open_position.trade_id)
+        except (AttributeError, TypeError, ValueError):
+            self.logger.warning("position_rebuild_rejected reason=invalid_accounting_open_position")
+            self._active_position = None
+            return None
+
+        if not market or not entry_time_utc or not trade_id:
+            self.logger.warning("position_rebuild_rejected reason=incomplete_accounting_open_position")
+            self._active_position = None
+            return None
+
+        deterministic_position_id = f"ACCOUNTING-{trade_id}"
+        self._active_position = {
+            "position_id": deterministic_position_id,
+            "market": market,
+            "symbol": market,
+            "side": side,
+            "entry_time_utc": entry_time_utc,
+            "entry_price": entry_price,
+            "position_size": position_size,
+            "trade_id": trade_id,
+            "status": "OPEN",
+            "active": True,
+            "hold_events": 0,
+            "entry_reason": "accounting_rebuild",
+            "entry_signal_strength": None,
+            "entry_spread_pct": None,
+        }
+        self.logger.info(
+            "position_rebuild_applied market=%s side=%s trade_id=%s entry_price=%.10f position_size=%.10f",
+            market,
+            side,
+            trade_id,
+            entry_price,
+            position_size,
+        )
+        return self._active_position
 
     def _persist(self, event: PositionLedgerEvent) -> None:
         with open(self.output_path, "a", newline="", encoding="utf-8") as csv_file:

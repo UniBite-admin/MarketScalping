@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 
 import websocket
 
-from accounting_engine import AccountingEngine
+from accounting_engine import AccountingDecision, AccountingEngine
+from execution_journal_reconciler import ExecutionJournalReconciler
 from feature_signal_engine import FeatureSignalEngine
 from execution_engine import ExecutionEngine
 from position_manager import PositionManager
@@ -164,6 +165,8 @@ class MarketDataEngine:
         self._last_frame = ""
         self._last_market_update_monotonic = time.monotonic()
         self._stale_warning_active = False
+        self.recovery_status = "RECOVERY_NOT_COMPLETE"
+        self._startup_recovery_attempted = False
 
         self.feature_engine = None
         if self.feature_engine_enabled:
@@ -248,6 +251,105 @@ class MarketDataEngine:
             self.accounting_slippage_bps,
         )
 
+        self.run_startup_recovery()
+
+    def run_startup_recovery(self) -> str:
+        if self._startup_recovery_attempted and self.recovery_status in {"READY", "BLOCKED_ON_DIVERGENCE"}:
+            return self.recovery_status
+
+        self._startup_recovery_attempted = True
+        self.recovery_status = "RECOVERY_NOT_COMPLETE"
+
+        if self.accounting_engine is None:
+            self.recovery_status = "BLOCKED_ON_DIVERGENCE"
+            self.last_error = "startup_recovery_blocked reason=missing_accounting_engine"
+            self.logger.error("startup_recovery_blocked reason=missing_accounting_engine")
+            return self.recovery_status
+
+        if getattr(self.accounting_engine, "recovery_status", "VALID") != "VALID":
+            self.recovery_status = "BLOCKED_ON_DIVERGENCE"
+            self.last_error = "startup_recovery_blocked reason=accounting_state_invalid"
+            self.logger.error(
+                "startup_recovery_blocked reason=accounting_state_invalid checkpoint=%s",
+                self.accounting_open_position_state_path,
+            )
+            return self.recovery_status
+
+        journal_result = ExecutionJournalReconciler.reconcile(self.execution_output_path, self.accounting_engine)
+        if journal_result.get("overall_status") == "BLOCKED_ON_DIVERGENCE":
+            self.recovery_status = "BLOCKED_ON_DIVERGENCE"
+            self.last_error = (
+                f"startup_recovery_blocked reason={journal_result.get('blocking_reason') or 'journal_divergence'}"
+            )
+            self.logger.error(
+                "startup_recovery_blocked reason=%s journal_path=%s",
+                journal_result.get("blocking_reason") or "journal_divergence",
+                self.execution_output_path,
+            )
+            return self.recovery_status
+
+        if self.position_manager is not None:
+            rebuild_method = getattr(self.position_manager, "rebuild_from_accounting", None)
+            if callable(rebuild_method):
+                built_projection = rebuild_method(self.accounting_engine)
+                if built_projection is None and getattr(self.accounting_engine, "open_position", None) is not None:
+                    self.recovery_status = "BLOCKED_ON_DIVERGENCE"
+                    self.last_error = "startup_recovery_blocked reason=position_projection_rebuild_failed"
+                    self.logger.error("startup_recovery_blocked reason=position_projection_rebuild_failed")
+                    return self.recovery_status
+                if not self._validate_position_projection_against_accounting():
+                    self.recovery_status = "BLOCKED_ON_DIVERGENCE"
+                    self.last_error = "startup_recovery_blocked reason=position_projection_invalid"
+                    self.logger.error("startup_recovery_blocked reason=position_projection_invalid")
+                    return self.recovery_status
+
+        self.recovery_status = "READY"
+        self.logger.info("startup_recovery_status status=READY")
+        return self.recovery_status
+
+    def _validate_position_projection_against_accounting(self) -> bool:
+        accounting_state = self.accounting_engine
+        if accounting_state is None:
+            return False
+
+        accounting_open_position = getattr(accounting_state, "open_position", None)
+        projected_state = getattr(self.position_manager, "_active_position", None)
+
+        if accounting_open_position is None:
+            return projected_state is None or not bool(projected_state.get("active", False))
+
+        if projected_state is None:
+            return False
+
+        for key in ["trade_id", "market", "symbol", "side", "entry_time_utc", "entry_price", "position_size"]:
+            if key not in projected_state:
+                return False
+
+        if projected_state.get("market") != accounting_open_position.symbol:
+            return False
+        if projected_state.get("symbol") != accounting_open_position.symbol:
+            return False
+        if projected_state.get("side") != accounting_open_position.side:
+            return False
+        if projected_state.get("entry_time_utc") != accounting_open_position.entry_timestamp_utc:
+            return False
+        if abs(float(projected_state.get("entry_price", 0.0)) - float(accounting_open_position.entry_price)) > 1e-9:
+            return False
+        if abs(float(projected_state.get("position_size", 0.0)) - float(accounting_open_position.position_size)) > 1e-9:
+            return False
+        if projected_state.get("trade_id") != accounting_open_position.trade_id:
+            return False
+
+        return True
+
+    def _can_process_market_events(self) -> bool:
+        if self.recovery_status == "READY":
+            return True
+
+        self.last_error = f"market_event_blocked recovery_status={self.recovery_status}"
+        self.logger.warning("market_event_blocked recovery_status=%s", self.recovery_status)
+        return False
+
     def update_features(self, ticker_state: TickerState, event_time_utc: str | None = None) -> None:
         if self.feature_engine is None:
             return
@@ -323,12 +425,22 @@ class MarketDataEngine:
             self.logger.error("execution_engine_update_error error=%s", exc)
             return None
 
-    def update_position_manager(self, execution_event, event_time_utc: str | None = None) -> None:
-        if execution_event is None:
-            return
+    def update_position_manager(self, accounting_decision: AccountingDecision | None, event_time_utc: str | None = None):
+        if accounting_decision is None:
+            return None
+
+        if not isinstance(accounting_decision, AccountingDecision):
+            self.logger.error(
+                "position_manager_update_error error=raw_execution_event_bypass_denied type=%s",
+                type(accounting_decision).__name__,
+            )
+            return None
 
         try:
-            position_event = self.position_manager.process(execution_event, event_time_utc=event_time_utc)
+            position_event = self.position_manager.process_accounting_decision(
+                accounting_decision,
+                event_time_utc=event_time_utc,
+            )
             if self.debug and position_event is not None:
                 self.logger.debug(
                     "position_event_debug action=%s status=%s id=%s",
@@ -336,8 +448,10 @@ class MarketDataEngine:
                     position_event.status,
                     position_event.position_id,
                 )
+            return position_event
         except Exception as exc:
             self.logger.error("position_manager_update_error error=%s", exc)
+            return None
 
     def update_accounting(self, execution_event, ticker_state, strategy_decision, event_time_utc: str | None = None) -> None:
         if self.accounting_engine is None:
@@ -551,13 +665,22 @@ class MarketDataEngine:
             if ticker_state is None:
                 return
 
+            if not self._can_process_market_events():
+                self.logger.warning(
+                    "market_event_blocked market=%s event=%s recovery_status=%s",
+                    self.market,
+                    event,
+                    self.recovery_status,
+                )
+                return
+
             self.ticker_state = ticker_state
             self.update_features(ticker_state, event_time_utc=canonical_event_time_utc)
             strategy_decision = self.update_strategy(event_time_utc=canonical_event_time_utc)
             risk_decision = self.update_risk(strategy_decision, event_time_utc=canonical_event_time_utc)
             execution_event = self.update_execution(risk_decision, event_time_utc=canonical_event_time_utc)
-            self.update_position_manager(execution_event, event_time_utc=canonical_event_time_utc)
             self.update_accounting(execution_event, ticker_state, strategy_decision, event_time_utc=canonical_event_time_utc)
+            self.update_position_manager(self.accounting_engine.last_decision, event_time_utc=canonical_event_time_utc)
             self.last_message_summary = self.summarize_message(data) if self.debug else "Latest ticker event processed"
             self.connection_state = "receiving_ticker"
             self.status_message = f"Receiving live ticker updates for {self.market}"
@@ -570,13 +693,22 @@ class MarketDataEngine:
             if ticker_state is None:
                 return
 
+            if not self._can_process_market_events():
+                self.logger.warning(
+                    "market_event_blocked market=%s event=%s recovery_status=%s",
+                    self.market,
+                    event,
+                    self.recovery_status,
+                )
+                return
+
             self.ticker_state = ticker_state
             self.update_features(ticker_state, event_time_utc=canonical_event_time_utc)
             strategy_decision = self.update_strategy(event_time_utc=canonical_event_time_utc)
             risk_decision = self.update_risk(strategy_decision, event_time_utc=canonical_event_time_utc)
             execution_event = self.update_execution(risk_decision, event_time_utc=canonical_event_time_utc)
-            self.update_position_manager(execution_event, event_time_utc=canonical_event_time_utc)
             self.update_accounting(execution_event, ticker_state, strategy_decision, event_time_utc=canonical_event_time_utc)
+            self.update_position_manager(self.accounting_engine.last_decision, event_time_utc=canonical_event_time_utc)
             self.last_message_summary = self.summarize_message(data) if self.debug else "Latest trade event processed"
             self.connection_state = "receiving_ticker"
             self.status_message = f"Receiving live ticker and trade updates for {self.market}"

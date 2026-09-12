@@ -734,7 +734,9 @@ class Orchestrator:
                         "run_id": art.get("run_id"),
                         "task_id": art.get("task_id"),
                     })
-                content = art.get("content") or {}
+                content = art.get("content")
+                if not isinstance(content, dict):
+                    content = {}
                 run_id = art.get("run_id")
                 agent_role = content.get("agent_role")
                 if run_id:
