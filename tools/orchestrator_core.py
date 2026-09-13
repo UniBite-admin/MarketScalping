@@ -16,6 +16,7 @@ from tools.agent_runtime import AgentRuntime, InvocationRequest
 from tools.architect_agent import ArchitectExecutor
 from tools.developer_agent import DeveloperExecutor
 from tools.qa_agent import QAExecutor
+from tools.roadmap_loader import RoadmapLoader, RoadmapValidationError
 from tools.safety_agent import SafetyExecutor
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -405,11 +406,20 @@ class AgentRunner:
 
 
 class Orchestrator:
-    def __init__(self, policies_path: Optional[str] = None, store_root: Optional[str] = None):
+    def __init__(self, policies_path: Optional[str] = None, store_root: Optional[str] = None, roadmap_path: Optional[str] = None):
         self.store = TaskStore(root=store_root)
         self.wf = WorkflowEngine()
         self.pe = PolicyEvaluator(policies_path=policies_path)
         self.agent_runner = AgentRunner()
+        self.roadmap_error = None
+        try:
+            self.roadmap_loader = RoadmapLoader(roadmap_path=roadmap_path)
+        except RoadmapValidationError as exc:
+            self.roadmap_loader = None
+            self.roadmap_error = str(exc)
+        except Exception as exc:  # pragma: no cover - defensive compatibility
+            self.roadmap_loader = None
+            self.roadmap_error = str(exc)
         # persistent runtime for idempotent runs (in-memory for STEP 4D)
         self.runtime = AgentRuntime()
         # Load policy-driven limits with explicit safe fallbacks
@@ -829,8 +839,53 @@ class Orchestrator:
             "read_only": True,
         }
 
-    def create_task(self, title: str, description: str = "", created_by: str = "system", **kwargs) -> Dict[str, Any]:
-        return self.store.create_task(title, description, created_by, extra=kwargs)
+    def load_master_roadmap(self) -> Dict[str, Any]:
+        if self.roadmap_loader is None:
+            raise RoadmapValidationError(self.roadmap_error or "Master roadmap is unavailable or malformed.")
+        return self.roadmap_loader.document
+
+    def get_roadmap_stage(self, stage_id: str, completed_stage_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+        if self.roadmap_loader is None:
+            raise RoadmapValidationError(self.roadmap_error or "Master roadmap is unavailable or malformed.")
+        stage = self.roadmap_loader.get_stage(stage_id)
+        if stage is None:
+            raise RoadmapValidationError(f"Unknown roadmap stage_id: {stage_id}")
+        stage_payload = dict(stage)
+        stage_payload["eligible"] = self.is_roadmap_stage_eligible(stage_id, completed_stage_ids=completed_stage_ids)
+        return stage_payload
+
+    def is_roadmap_stage_eligible(self, stage_id: str, completed_stage_ids: Optional[List[str]] = None) -> bool:
+        if self.roadmap_loader is None:
+            raise RoadmapValidationError(self.roadmap_error or "Master roadmap is unavailable or malformed.")
+        return self.roadmap_loader.determine_eligibility(stage_id, completed_stage_ids=completed_stage_ids, repo_root=ROOT)
+
+    def create_task(self, title: str, description: str = "", created_by: str = "system",
+                    roadmap_stage_id: Optional[str] = None, roadmap_id: Optional[str] = None,
+                    roadmap_version: Optional[str] = None, parent_stage_id: Optional[str] = None,
+                    **kwargs) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = dict(kwargs)
+        if roadmap_stage_id is not None:
+            metadata["roadmap_stage_id"] = str(roadmap_stage_id)
+            if self.roadmap_loader is not None:
+                stage = self.roadmap_loader.get_stage(roadmap_stage_id)
+                if stage is None:
+                    raise RoadmapValidationError(f"Unknown roadmap stage_id: {roadmap_stage_id}")
+                metadata["roadmap_id"] = self.roadmap_loader.document.get("roadmap_id")
+                metadata["roadmap_version"] = self.roadmap_loader.document.get("version")
+                metadata["parent_stage_id"] = stage.get("parent_stage_id")
+                metadata["target_workflow_state"] = stage.get("target_workflow_state")
+            else:
+                metadata["roadmap_id"] = roadmap_id
+                metadata["roadmap_version"] = roadmap_version
+                metadata["parent_stage_id"] = parent_stage_id
+        else:
+            if roadmap_id is not None:
+                metadata["roadmap_id"] = roadmap_id
+            if roadmap_version is not None:
+                metadata["roadmap_version"] = roadmap_version
+            if parent_stage_id is not None:
+                metadata["parent_stage_id"] = parent_stage_id
+        return self.store.create_task(title, description, created_by, extra=metadata)
 
     def record_ci_result(self, task_id: str, run_id: str, status: str, command: str, evidence: Any,
                         repository_revision: Optional[str] = None, producer: str = "ci") -> Dict[str, Any]:

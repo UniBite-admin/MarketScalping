@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from risk_engine import RiskState
+
 
 @dataclass
 class SimulatedOrder:
@@ -217,6 +219,11 @@ class AccountingEngine:
         self._processed_successful_execution_ids: set[str] = set()
         self._processed_successful_execution_id_order: list[str] = []
         self._max_processed_successful_ids = 10000
+        self.daily_loss: float | None = 0.0
+        self.daily_loss_reference_utc: str | None = None
+        self.max_daily_loss: float | None = None
+        self.consecutive_losses: int | None = 0
+        self.max_consecutive_losses: int | None = None
         self.recovery_status = "VALID"
         self.last_decision = AccountingDecision(
             status="REJECTED",
@@ -297,6 +304,9 @@ class AccountingEngine:
         self.current_drawdown = float(account_state.get("current_drawdown", self.current_drawdown))
         self.maximum_drawdown = float(account_state.get("maximum_drawdown", self.maximum_drawdown))
         self._last_mark_price = _float_or_none(state.get("last_mark_price"))
+        self.daily_loss = _float_or_none(state.get("daily_loss"))
+        self.daily_loss_reference_utc = _coerce_str_or_none(state.get("daily_loss_reference_utc"))
+        self.consecutive_losses = _coerce_int_or_none(state.get("consecutive_losses"))
 
         counters = state.get("counters") or {}
         self._trade_counter = max(self._trade_counter, int(counters.get("trade_counter", self._trade_counter)))
@@ -633,6 +643,7 @@ class AccountingEngine:
         self.unrealized_pnl = 0.0
         self.cumulative_fees += exit_fee
         self.cumulative_slippage += exit_slippage
+        self._update_loss_controls(timestamp_utc=timestamp_utc, net_pnl=net_pnl)
         self._recompute_equity(open_market_value=None)
 
         closed_trade = ClosedTrade(
@@ -669,6 +680,38 @@ class AccountingEngine:
         self.open_position = None
         self._last_mark_price = None
         return closed_trade
+
+    def _update_loss_controls(self, *, timestamp_utc: str, net_pnl: float) -> None:
+        parsed = None
+        current_day = None
+        try:
+            parsed = datetime.fromisoformat(timestamp_utc.replace("Z", "+00:00"))
+            current_day = parsed.date()
+        except ValueError:
+            current_day = None
+
+        if self.daily_loss_reference_utc is None or current_day is None:
+            self.daily_loss_reference_utc = timestamp_utc
+            self.daily_loss = 0.0
+        else:
+            try:
+                reference_dt = datetime.fromisoformat(self.daily_loss_reference_utc.replace("Z", "+00:00"))
+            except ValueError:
+                self.daily_loss_reference_utc = timestamp_utc
+                self.daily_loss = 0.0
+            else:
+                if reference_dt.date() != current_day:
+                    self.daily_loss_reference_utc = timestamp_utc
+                    self.daily_loss = 0.0
+
+        if net_pnl < 0:
+            self.daily_loss = max(float(self.daily_loss or 0.0) + abs(float(net_pnl)), 0.0)
+            self.consecutive_losses = (int(self.consecutive_losses or 0)) + 1
+        else:
+            pnl_reduction = max(float(net_pnl), 0.0)
+            current_loss = float(self.daily_loss or 0.0)
+            self.daily_loss = max(current_loss - pnl_reduction, 0.0)
+            self.consecutive_losses = 0
 
     def _persist_closed_trade(self, trade: ClosedTrade) -> None:
         with open(self.trade_ledger_path, "a", newline="", encoding="utf-8") as csv_file:
@@ -721,6 +764,9 @@ class AccountingEngine:
             },
             "processed_successful_execution_ids": self._processed_successful_execution_id_order,
             "last_mark_price": self._last_mark_price,
+            "daily_loss": self.daily_loss,
+            "daily_loss_reference_utc": self.daily_loss_reference_utc,
+            "consecutive_losses": self.consecutive_losses,
         }
 
         if self.open_position is not None:
@@ -917,11 +963,30 @@ class AccountingEngine:
         if self.current_drawdown > self.maximum_drawdown:
             self.maximum_drawdown = self.current_drawdown
 
+    def build_risk_state(self) -> RiskState:
+        return RiskState.from_accounting(self)
+
 
 def _fmt(value: float | None) -> str:
     if value is None:
         return ""
     return f"{value:.10f}"
+
+
+def _coerce_str_or_none(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _coerce_int_or_none(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _atomic_write_json(path: str, payload: dict) -> None:

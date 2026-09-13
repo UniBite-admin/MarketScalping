@@ -1,0 +1,1048 @@
+{
+  "roadmap_id": "marketscalping_master_roadmap",
+  "version": "2026.09.13",
+  "name": "MarketScalping Master Roadmap",
+  "description": "Project planning artifact for the MarketScalping program. This is a planning authority only and does not mutate runtime workflow state.",
+  "source_of_truth": "planning-only",
+  "stages": [
+    {
+      "stage_id": "6",
+      "title": "STEP 6 — Financial-State Architecture",
+      "description": "Establish the authoritative financial state model, startup recovery, and fail-closed reconciliation contract without changing live trading authority.",
+      "parent_stage_id": null,
+      "depends_on": [],
+      "risk_level": "high",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "ADR 0002 accepted",
+        "ADR 0003 accepted",
+        "startup recovery gate validated",
+        "financial state authority documented"
+      ],
+      "exit_criteria": [
+        "Account ledger identified as authority",
+        "PositionManager treated as derived projection",
+        "Startup recovery is fail-closed and deterministic",
+        "Execution journal is evidence-only"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [
+        ".agent/adr/0002-financial-state-source-of-truth.md",
+        ".agent/adr/0003-recovery-and-reconciliation.md",
+        "PROJECT_MILESTONES.md"
+      ],
+      "notes": "Step 6 is complete only when the financial authority model and recovery gate are validated and remain isolated from live-trading execution."
+    },
+    {
+      "stage_id": "6A",
+      "title": "6A — Financial-State Architecture Investigation",
+      "description": "Audit the current architecture and establish the authority model for accounting, execution, and position state.",
+      "parent_stage_id": "6",
+      "depends_on": [],
+      "risk_level": "high",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "architecture audit artifacts",
+        "authority split documented",
+        "source-of-truth analysis complete"
+      ],
+      "exit_criteria": [
+        "Execution, accounting, and position responsibilities are explicit",
+        "PositionManager is not financial authority",
+        "AccountingEngine is identified as authoritative ledger"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [
+        ".agent/adr/0002-financial-state-source-of-truth.md",
+        "PROJECT_MILESTONES.md"
+      ],
+      "notes": "This milestone is already completed in the repo and is the basis for the downstream financial-state contract."
+    },
+    {
+      "stage_id": "6B",
+      "title": "6B — Financial-State Authority",
+      "description": "Convert the financial authority design into explicit recovery and reconciliation responsibilities.",
+      "parent_stage_id": "6",
+      "depends_on": ["6A"],
+      "risk_level": "high",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "recovery lifecycle documented",
+        "projection rebuild contract documented",
+        "fail-closed startup gate defined"
+      ],
+      "exit_criteria": [
+        "Accounting state is recovered before market-event processing",
+        "Position projection is rebuilt from accounting state",
+        "Divergence blocks startup instead of silently continuing"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [
+        ".agent/adr/0003-recovery-and-reconciliation.md",
+        ".agent/adr/0002-financial-state-source-of-truth.md"
+      ],
+      "notes": "This milestone is already completed in the repo and is the recovered authority contract."
+    },
+    {
+      "stage_id": "6C",
+      "title": "6C — Financial-State-Aware Risk",
+      "description": "Define the risk architecture that is aware of financial state, exposure, position, and loss controls before executing any risk-sensitive behavior.",
+      "parent_stage_id": "6",
+      "depends_on": ["6A", "6B"],
+      "risk_level": "high",
+      "owner": "architect",
+      "target_workflow_state": "ARCHITECTURE",
+      "required_evidence": [
+        "risk-state contract",
+        "position/exposure limits design",
+        "loss-controls design"
+      ],
+      "exit_criteria": [
+        "Risk state contract is defined",
+        "Risk gate boundaries are explicit",
+        "Financial state is available to pre-commit risk checks"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "The Stage 6 gate is not considered closed until all 6C sub-stages complete and exit criteria are satisfied."
+    },
+    {
+      "stage_id": "6C.1",
+      "title": "6C.1 — Risk Architecture Investigation",
+      "description": "Investigate the risk-state design, exposure model, and execution permission boundaries required before implementing production risk logic.",
+      "parent_stage_id": "6C",
+      "depends_on": ["6A", "6B"],
+      "risk_level": "high",
+      "owner": "architect",
+      "target_workflow_state": "ARCHITECTURE",
+      "required_evidence": [
+        "risk architecture analysis",
+        "risk-state problem statement",
+        "current risk gaps identified"
+      ],
+      "exit_criteria": [
+        "Current gap between strategy and financial-state risk is explicit",
+        "Required risk contracts are enumerated",
+        "Implementation plan is created without implementing risk logic"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "This is the next planned milestone and is currently eligible to proceed after Step 6 authority foundations are recognized as satisfied."
+    },
+    {
+      "stage_id": "6C.2",
+      "title": "6C.2 — Risk State Contract",
+      "description": "Define the explicit risk-state contract and request/response data model required for gating decisions.",
+      "parent_stage_id": "6C",
+      "depends_on": ["6C.1"],
+      "risk_level": "high",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "risk-state schema",
+        "state ownership boundaries",
+        "risk input/output contract"
+      ],
+      "exit_criteria": [
+        "Risk contract is precise",
+        "No financial authority is delegated to RiskEngine",
+        "Risk gating remains pre-commit only"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "This milestone is blocked until 6C.1 exits successfully."
+    },
+    {
+      "stage_id": "6C.3",
+      "title": "6C.3 — Position / Exposure Limits",
+      "description": "Define position, exposure, and concentration limits as explicit policy constraints instead of ad-hoc calculations.",
+      "parent_stage_id": "6C",
+      "depends_on": ["6C.2"],
+      "risk_level": "high",
+      "owner": "risk",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "position limit model",
+        "exposure limits",
+        "concentration rules"
+      ],
+      "exit_criteria": [
+        "Position exposure limits are explicit",
+        "Exposure checks are testable",
+        "No trade can bypass position limits"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "Deferred until the risk-state contract is validated."
+    },
+    {
+      "stage_id": "6C.4",
+      "title": "6C.4 — Risk-per-Trade",
+      "description": "Specify the per-trade risk budget, position sizing, and acceptance criteria for single-trade exposure.",
+      "parent_stage_id": "6C",
+      "depends_on": ["6C.3"],
+      "risk_level": "high",
+      "owner": "risk",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "trade risk budget",
+        "position sizing model",
+        "stop-loss and exposure assumptions"
+      ],
+      "exit_criteria": [
+        "Maximum per-trade risk is explicit",
+        "Per-trade risk can be reproduced in validation",
+        "No trade is accepted without a risk gate decision"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "Requires prior exposure-limit definition."
+    },
+    {
+      "stage_id": "6C.5",
+      "title": "6C.5 — Loss Controls",
+      "description": "Specify daily, session, and drawdown-based loss controls that are enforced before execution proceeds.",
+      "parent_stage_id": "6C",
+      "depends_on": ["6C.4"],
+      "risk_level": "critical",
+      "owner": "risk",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "daily loss limits",
+        "drawdown controls",
+        "kill conditions"
+      ],
+      "exit_criteria": [
+        "Loss controls are explicit and testable",
+        "No trade can bypass daily drawdown constraints",
+        "Human intervention remains required for defined escalation paths"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "Used to support the fail-safe architecture before any live-trading stage."
+    },
+    {
+      "stage_id": "6C.6",
+      "title": "6C.6 — Risk Gate Integration",
+      "description": "Integrate the risk gate into the execution-precondition path without granting RiskEngine financial authority.",
+      "parent_stage_id": "6C",
+      "depends_on": ["6C.5"],
+      "risk_level": "high",
+      "owner": "architect",
+      "target_workflow_state": "DEVELOPMENT",
+      "required_evidence": [
+        "risk gate integrated with execution boundary",
+        "risk gate remains pre-commit only",
+        "no bypass path allowed"
+      ],
+      "exit_criteria": [
+        "Risk gate is enforced before execution acceptance",
+        "Execution is still evidence-only relative to accounting",
+        "No risk component mutates accounting state"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "This is integration only; it must not enable live trading."
+    },
+    {
+      "stage_id": "6C.7",
+      "title": "6C.7 — Risk Validation",
+      "description": "Validate the risk logic against simulated historical conditions and confirm fail-safe behavior before moving into later stages.",
+      "parent_stage_id": "6C",
+      "depends_on": ["6C.6"],
+      "risk_level": "high",
+      "owner": "qa",
+      "target_workflow_state": "QA",
+      "required_evidence": [
+        "risk test suite",
+        "fail-safe validations",
+        "risk pass/fail evidence"
+      ],
+      "exit_criteria": [
+        "Risk logic is validated under representative historical stress",
+        "Safety and QA evidence is recorded",
+        "Risk gate is proven to block unsafe execution paths"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "This is the final gate for closing Step 6."
+    },
+    {
+      "stage_id": "7",
+      "title": "STEP 7 — Historical Data / Replay",
+      "description": "Build and validate the historical-data pipeline, canonical schemas, and deterministic replay layer required for reproducible strategy and risk evaluation.",
+      "parent_stage_id": null,
+      "depends_on": ["6"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "historical-data contract",
+        "collector integrity",
+        "deterministic replay validation"
+      ],
+      "exit_criteria": [
+        "Raw and canonical data contracts are valid",
+        "Replay is deterministic and repeatable",
+        "No live exchange path is present in the historical-data pipeline"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "Step 7 is not eligible until Step 6 is closed under its exit criteria."
+    },
+    {
+      "stage_id": "7.1",
+      "title": "7.1 — Historical Data Contract / Canonical Schema",
+      "description": "Define the canonical normalized data contract, raw-vs-normalized boundaries, and required fields for replay and backtesting.",
+      "parent_stage_id": "7",
+      "depends_on": ["6"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "canonical schema",
+        "raw/normalized separation",
+        "timestamp and field validation rules"
+      ],
+      "exit_criteria": [
+        "Every field is explicitly explained",
+        "Replay input matches canonical contract",
+        "Malformed or missing data is rejected deterministically"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "Requires Step 6 authority model to be closed."
+    },
+    {
+      "stage_id": "7.2",
+      "title": "7.2 — Collector Integrity",
+      "description": "Validate the collector pipeline for duplicates, ordering, pagination, malformed records, rate-limit handling, and incomplete windows.",
+      "parent_stage_id": "7",
+      "depends_on": ["7.1"],
+      "risk_level": "medium",
+      "owner": "developer",
+      "target_workflow_state": "DEVELOPMENT",
+      "required_evidence": [
+        "duplicate handling",
+        "pagination validation",
+        "window completeness checks"
+      ],
+      "exit_criteria": [
+        "Collector rejects malformed inputs",
+        "No duplicate records are silently accepted",
+        "Incomplete windows are explicitly reported"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "Depends on the canonical data contract."
+    },
+    {
+      "stage_id": "7.3",
+      "title": "7.3 — Raw → Validated → Canonical Dataset Flow",
+      "description": "Define the explicit pipeline from raw exchange data to validated canonical replay input with deterministic checks at each handoff.",
+      "parent_stage_id": "7",
+      "depends_on": ["7.2"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "raw data validation",
+        "canonical conversion map",
+        "handoff integrity evidence"
+      ],
+      "exit_criteria": [
+        "Each dataset stage is identifiable",
+        "Validation rules are deterministically applied",
+        "Data quality issues are reported without inventing missing values"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "Flow validation happens after collector integrity is proven."
+    },
+    {
+      "stage_id": "7.4",
+      "title": "7.4 — Replay Determinism and Realism",
+      "description": "Prove that replay can reproduce the same historical event order, timestamps, and market conditions while remaining realistic to the current simulation model.",
+      "parent_stage_id": "7",
+      "depends_on": ["7.3"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "QA",
+      "required_evidence": [
+        "deterministic replay test cases",
+        "timestamp correctness",
+        "market-state assumptions"
+      ],
+      "exit_criteria": [
+        "Replay output is reproducible",
+        "Timestamps and ordering are preserved",
+        "No live WebSocket or live trading path is introduced"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "Replay realism is validated only after the dataset path is defined and stable."
+    },
+    {
+      "stage_id": "8",
+      "title": "STEP 8 — Backtesting Engine",
+      "description": "Implement a deterministic backtesting layer that simulates execution, fees, slippage, fill behavior, and performance metrics without compromising risk or accounting authority.",
+      "parent_stage_id": null,
+      "depends_on": ["7"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "backtest architecture",
+        "historical replay integration",
+        "execution simulation model"
+      ],
+      "exit_criteria": [
+        "Backtest can reproduce historical behavior",
+        "Execution costs are included",
+        "Metrics are auditable and reproducible"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "Backtesting depends on Step 7 replay validity."
+    },
+    {
+      "stage_id": "8.1",
+      "title": "8.1 — Backtest Architecture",
+      "description": "Define the backtest architecture, event flow, and simulation boundaries for strategy and risk evaluation.",
+      "parent_stage_id": "8",
+      "depends_on": ["7"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "event model",
+        "data flow",
+        "simulation boundaries"
+      ],
+      "exit_criteria": [
+        "Backtest structure is documented and testable",
+        "Historical replay is the canonical input source",
+        "Risk and accounting boundaries are preserved"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "Defines the simulation boundary for later strategy validation."
+    },
+    {
+      "stage_id": "8.2",
+      "title": "8.2 — Strategy and Risk Integration",
+      "description": "Integrate strategy, risk, and execution assumptions into the backtest engine without granting any execution component financial authority.",
+      "parent_stage_id": "8",
+      "depends_on": ["8.1"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "DEVELOPMENT",
+      "required_evidence": [
+        "strategy hooks",
+        "risk gate hooks",
+        "execution simulation hooks"
+      ],
+      "exit_criteria": [
+        "Strategy and risk decisions are simulated as explicit state transitions",
+        "Execution is simulated with realistic constraints",
+        "Accounting remains authoritative"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "This is a simulation-only integration layer."
+    },
+    {
+      "stage_id": "8.3",
+      "title": "8.3 — Fees, Spread, Slippage, Latency, and Fill Behavior",
+      "description": "Model execution realism, including fees, spread, slippage, latency, partial fills, failed orders, and minimum-order constraints.",
+      "parent_stage_id": "8",
+      "depends_on": ["8.2"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "QA",
+      "required_evidence": [
+        "fee model",
+        "spread assumptions",
+        "slippage and latency assumptions",
+        "fill behavior tests"
+      ],
+      "exit_criteria": [
+        "The backtest includes cost and execution realism",
+        "Failed orders and partial fills are represented",
+        "Results are explainable and reproducible"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "Cost realism is mandatory before any strategy is considered credible."
+    },
+    {
+      "stage_id": "8.4",
+      "title": "8.4 — Backtest Outputs and Performance Metrics",
+      "description": "Generate auditable output for equity curves, trade ledger, drawdown, and summary metrics required for robust strategy validation.",
+      "parent_stage_id": "8",
+      "depends_on": ["8.3"],
+      "risk_level": "medium",
+      "owner": "qa",
+      "target_workflow_state": "QA",
+      "required_evidence": [
+        "equity curve",
+        "trade ledger",
+        "performance metrics",
+        "cost attribution"
+      ],
+      "exit_criteria": [
+        "Outputs are reproducible",
+        "No lookahead or leakage is present",
+        "Metrics explain the outcome under realistic cost assumptions"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "This stage closes the backtesting engine planning work."
+    },
+    {
+      "stage_id": "9",
+      "title": "STEP 9 — Strategy Validation",
+      "description": "Validate candidate trading strategies under realistic historical and cost-aware conditions before any paper-trading or live deployment is considered. Validation must separate development, validation, and out-of-sample evaluation and must treat a failed strategy as valid research evidence rather than as a hidden success criterion.",
+      "parent_stage_id": null,
+      "depends_on": ["8"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "validation_result",
+        "backtest_result",
+        "development/validation/OOS separation",
+        "walk-forward validation evidence",
+        "robustness testing evidence",
+        "parameter sensitivity evidence",
+        "statistical validity evidence",
+        "failed-strategy outcome record"
+      ],
+      "exit_criteria": [
+        "Development, validation, and out-of-sample data are strictly separated with no leakage between them",
+        "The strategy survives walk-forward validation and robustness testing under representative conditions",
+        "Parameter sensitivity is reported and the strategy is not accepted on a single favorable configuration",
+        "Statistical confidence or statistical validity is documented when making performance claims",
+        "A strategy that fails validation is recorded as a valid research outcome and cannot be treated as success simply because a profitable backtest existed",
+        "A strategy is only considered valid if the defined validation process is passed with objective evidence and not by profit narrative alone"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [
+        "validation_result",
+        "backtest_result"
+      ],
+      "notes": "The underlying rule is: profitable backtest alone does not imply successful strategy validation. The strategy must survive the validation process with evidence and remain valid even when it fails."
+    },
+    {
+      "stage_id": "9.1",
+      "title": "9.1 — Baseline Strategies and Benchmarking",
+      "description": "Establish baseline strategies, no-trade baselines, and benchmark comparisons before evaluating candidate strategy improvements. Baselines must be used as a control against claims of improvement and to make failed strategy outcomes meaningful.",
+      "parent_stage_id": "9",
+      "depends_on": ["8"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "buy-and-hold baseline",
+        "no-trade baseline",
+        "benchmark definition",
+        "baseline comparison result"
+      ],
+      "exit_criteria": [
+        "A strategy is judged relative to meaningful baselines and not by isolated performance claims",
+        "No false claims are made without comparison to a robust baseline",
+        "The strategy is required to beat or justify its baseline under valid evaluation criteria",
+        "Research can explicitly fail without being treated as success and without hiding the failure behind a single profitable backtest"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [
+        "backtest_result",
+        "validation_result"
+      ],
+      "notes": "Benchmarking is required before model tuning or strategy selection."
+    },
+    {
+      "stage_id": "9.2",
+      "title": "9.2 — Walk-Forward and Robustness Testing",
+      "description": "Evaluate the strategy with time-series aware validation, walk-forward splits, regime analysis, robustness testing, parameter sensitivity, and statistical validity under varying market conditions. The result must be able to reject the strategy when it fails, without treating that rejection as a defect in the process.",
+      "parent_stage_id": "9",
+      "depends_on": ["9.1"],
+      "risk_level": "medium",
+      "owner": "qa",
+      "target_workflow_state": "QA",
+      "required_evidence": [
+        "development/validation/OOS separation",
+        "walk-forward results",
+        "robustness evidence",
+        "parameter sensitivity evidence",
+        "statistical validity evidence",
+        "validation_result"
+      ],
+      "exit_criteria": [
+        "Performance is not overfit to the same window and survives walk-forward validation",
+        "Regime dependency and robustness are analyzed under varying conditions",
+        "Parameter sensitivity is measurable and documented",
+        "Statistical confidence or statistical validity is reported before claiming strategy superiority",
+        "The strategy may fail validation legitimately and that failed outcome is treated as valid research evidence",
+        "A strategy is not promoted beyond research without passing the defined validation process with objective evidence"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [
+        "validation_result",
+        "backtest_result"
+      ],
+      "notes": "This stage is essential before paper trading or model selection. Failure is an acceptable research result when it is evidenced and explicit."
+    },
+    {
+      "stage_id": "10",
+      "title": "STEP 10 — Paper Trading",
+      "description": "Operate the strategy in a real-time paper-trading environment with real market data and realistic execution assumptions while preserving the fail-safe architecture and accounting authority model. Paper trading must include a sufficient operating period to observe event flow, failure modes, and divergence under realistic conditions before any live-money stage is considered.",
+      "parent_stage_id": null,
+      "depends_on": ["9"],
+      "risk_level": "high",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "paper-trading result",
+        "paper-trading architecture",
+        "real-time market-data connection",
+        "risk and execution simulation gate",
+        "longitudinal paper-trading evidence",
+        "paper-vs-backtest comparison",
+        "failure/restart/recovery evidence"
+      ],
+      "exit_criteria": [
+        "Paper trading remains active for a sufficient longitudinal observation period to capture normal and abnormal market behavior",
+        "Paper-trading outcomes are compared against the backtest and explained when they diverge due to latency, spread, data quality, stale inputs, or execution assumptions",
+        "WebSocket disconnects, stale-data handling, API failures, process restarts, accounting recovery, corrupted-state handling, duplicate-event handling, and state-divergence detection are all tested and documented",
+        "Accounting, risk, and monitoring remain fail-closed under these operational conditions",
+        "No live trading permission or real order placement occurs during this stage"
+      ],
+      "human_approval_required": true,
+      "evidence_refs": [
+        "paper-trading result",
+        "backtest_result"
+      ],
+      "notes": "Paper trading is a simulation-grade operational rehearsal, not a live-money stage. It must be observed long enough to reveal operational realities and failure modes."
+    },
+    {
+      "stage_id": "10.1",
+      "title": "10.1 — Real-Time Market Data and Execution Simulation",
+      "description": "Use real-time market data and deterministic execution assumptions in a paper environment with realistic latency, stale-data detection, restart handling, failure recovery, and event integrity guarantees.",
+      "parent_stage_id": "10",
+      "depends_on": ["9"],
+      "risk_level": "high",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "live market data feed",
+        "execution simulation",
+        "stale-data and churn handling",
+        "WebSocket disconnect test evidence",
+        "API failure handling evidence",
+        "process-restart evidence",
+        "accounting recovery evidence",
+        "duplicate-event handling evidence",
+        "corrupted-state handling evidence",
+        "state-divergence detection evidence"
+      ],
+      "exit_criteria": [
+        "Market data and execution remain deterministic under failure conditions",
+        "WebSocket disconnects, stale data, and API failures are detected and handled without silent divergence",
+        "Process restart and accounting recovery are tested and the system does not silently continue with corrupted state",
+        "Duplicate or corrupted events are detected and reconciled",
+        "State divergence is observable and blocks unsafe continuation",
+        "Account reconciliation remains intact under operational risk conditions"
+      ],
+      "human_approval_required": true,
+      "evidence_refs": [
+        "paper-trading result",
+        "validation_result"
+      ],
+      "notes": "Depends on strategy validation and the stable risk stack. Failure handling is part of the paper-trading acceptance criteria, not an afterthought."
+    },
+    {
+      "stage_id": "10.2",
+      "title": "10.2 — Paper-vs-Backtest Comparison",
+      "description": "Compare paper-trading outcomes with historical backtest results and identify divergence caused by latency, spread, data quality, execution assumptions, or operational conditions. The objective is to prove the real-time operation matches the modeled assumptions before live trading is considered.",
+      "parent_stage_id": "10",
+      "depends_on": ["10.1"],
+      "risk_level": "high",
+      "owner": "qa",
+      "target_workflow_state": "QA",
+      "required_evidence": [
+        "paper/backtest discrepancy analysis",
+        "execution realism analysis",
+        "data quality controls",
+        "paper-trading result",
+        "backtest_result"
+      ],
+      "exit_criteria": [
+        "Differences are explained and attributable to real-world operating conditions or model assumptions",
+        "No unrecognized divergence remains after a sufficient observation period",
+        "A strategy is not promoted without observed realism and a documented explanation of any live-vs-paper gap",
+        "The paper-trading process is demonstrably representative of the validated strategy and operational constraints"
+      ],
+      "human_approval_required": true,
+      "evidence_refs": [
+        "paper-trading result",
+        "backtest_result"
+      ],
+      "notes": "Required to prove the paper-trading layer is operationally meaningful and can reveal execution reality before a live-money stage."
+    },
+    {
+      "stage_id": "11",
+      "title": "STEP 11 — ML / AI Decision Layer",
+      "description": "Introduce an ML or AI decision layer only after deterministic strategy behavior and risk constraints are proven, while preserving the risk-engine authority boundary. ML/AI is allowed only as a decision-support layer and must demonstrate measurable incremental value after fees, slippage, and other relevant costs. If no measurable improvement is shown, the model must be rejected or deferred.",
+      "parent_stage_id": null,
+      "depends_on": ["9", "10"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "prediction target specification",
+        "feature leakage controls",
+        "risk-boundary documentation",
+        "market-regime analysis",
+        "out-of-sample validation evidence",
+        "walk-forward validation evidence",
+        "cost-adjusted evaluation evidence",
+        "LLM boundary documentation",
+        "ml-ai value assessment"
+      ],
+      "exit_criteria": [
+        "A precise ML prediction target is defined, measured, and auditable",
+        "Feature leakage is prevented by design and is explicitly validated",
+        "Out-of-sample and walk-forward evidence are used for model selection and not just in-sample performance",
+        "The model is evaluated after fees, slippage, and relevant operational costs; measurable incremental value is required before production consideration",
+        "Market-regime analysis is included where the decision target is regime-dependent",
+        "LLM usage is explicitly bounded to research, analysis, or non-latency-critical tasks and is never part of the per-tick latency-critical decision path",
+        "ML/AI must never bypass RiskEngine and must remain a decision-support capability and not an execution authority",
+        "ML/AI provides no measurable improvement is explicitly allowed as a valid outcome requiring rejection or deferral of the ML layer"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "AI/ML may influence strategy decisions only under the same authority and risk constraints as deterministic logic. If it does not demonstrate measurable gain after real costs, it must not be forced into production."
+    },
+    {
+      "stage_id": "11.1",
+      "title": "11.1 — Prediction Target and Feature Research",
+      "description": "Define the prediction target, features, regime analysis, leakage controls, and research architecture required for any ML or AI model under consideration. The model must be assessed against the real decision problem, not a convenient surrogate that hides leakage or ignores cost.",
+      "parent_stage_id": "11",
+      "depends_on": ["9", "10"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "prediction target",
+        "feature dictionary",
+        "leakage prevention evidence",
+        "market-regime analysis",
+        "data leakage review"
+      ],
+      "exit_criteria": [
+        "The feature target is specific, measurable, and relevant to the execution decision",
+        "Leakage is prevented by construction and by explicit validation review",
+        "Candidate model features are evidence-based and regime-aware where applicable",
+        "The evaluation target does not assume a profitable result without cost-aware validation"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "ML only after a deterministic strategy foundation exists and only when the target and feature design are defensible."
+    },
+    {
+      "stage_id": "11.2",
+      "title": "11.2 — Simple Baseline Model and OOS Evaluation",
+      "description": "Compare a simple baseline model against more complex alternatives using walk-forward and out-of-sample evaluation, with cost-aware scoring and a clear decision rule for rejection or deferral when the AI layer provides no measurable improvement.",
+      "parent_stage_id": "11",
+      "depends_on": ["11.1"],
+      "risk_level": "medium",
+      "owner": "qa",
+      "target_workflow_state": "QA",
+      "required_evidence": [
+        "baseline model",
+        "out-of-sample results",
+        "walk-forward validation evidence",
+        "cost-adjusted evaluation",
+        "ml-ai value assessment",
+        "LLM boundary documentation"
+      ],
+      "exit_criteria": [
+        "The model is proven to beat the baseline only under valid evaluation with explicit out-of-sample and walk-forward checks",
+        "Model decisions remain consistent with risk gates and real operational constraints",
+        "LLMs are not used in the real-time trading path and remain outside the latency-critical decision loop",
+        "A model that provides no measurable improvement after fees and slippage is rejected or deferred rather than forced into production",
+        "The evidence must support either model acceptance or explicit rejection of the ML layer"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [],
+      "notes": "The ML path remains research-oriented and deterministic. Measurable edge after real costs is required for continued advancement."
+    },
+    {
+      "stage_id": "12",
+      "title": "STEP 12 — Observability / Monitoring",
+      "description": "Create structured observability, auditability, and alerting from market data, strategy, risk, execution, accounting, recovery, and operational health. The system must be able to reconstruct a decision path and its financial consequence from logs, metrics, and alerts, end-to-end from Market → Feature → Strategy → Risk → Execution → Accounting.",
+      "parent_stage_id": null,
+      "depends_on": ["6", "7", "8", "9", "10"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "observability evidence",
+        "system metrics",
+        "trading metrics",
+        "structured logs",
+        "alerts",
+        "recovery-blocked alert evidence",
+        "emergency-stop alert evidence",
+        "abnormal-loss alert evidence",
+        "state-divergence alert evidence",
+        "unexpected-execution alert evidence",
+        "Control Room integration",
+        "audit trail responsibilities"
+      ],
+      "exit_criteria": [
+        "System metrics and trading metrics are emitted for the major runtime stages and support health assessment",
+        "Structured logs are captured for Market, Feature, Strategy, Risk, Execution, and Accounting events",
+        "Alerts include recovery-blocked, emergency-stop, abnormal-loss, state-divergence, and unexpected-execution conditions",
+        "Operational health is visible across all major stages and state divergence is detectable and auditable",
+        "Control Room and alerting support safe operation and human response",
+        "Sufficient evidence exists to reconstruct the path from a market signal to a strategy decision, risk decision, execution, and resulting accounting effect"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [
+        "observability evidence",
+        "qa_result",
+        "safety_result"
+      ],
+      "notes": "Monitoring is a safety and control layer, not a bypass around risk or accounting authority. It must provide enough evidence to reconstruct decisions and financial impact."
+    },
+    {
+      "stage_id": "12.1",
+      "title": "12.1 — Structured Logs and Event Auditing",
+      "description": "Instrument the system with structured logs covering market data, features, strategy, risk, execution, accounting, recovery, and failures. Logs must support end-to-end reconstruction of the decision and financial effect at each stage.",
+      "parent_stage_id": "12",
+      "depends_on": ["6", "7", "8", "9", "10"],
+      "risk_level": "medium",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "structured log schema",
+        "audit events",
+        "operational error tracing",
+        "observation trail",
+        "decision-to-accounting reconstruction evidence"
+      ],
+      "exit_criteria": [
+        "Every major component emits auditable signals that can be correlated across the pipeline",
+        "State changes are visible and attributable from Market to Feature to Strategy to Risk to Execution to Accounting",
+        "Operational incidents can be diagnosed without guessing, including divergence and blocked recovery",
+        "A decision can be reconstructed with sufficient evidence to explain the financial effect and the exact runtime reason for the outcome"
+      ],
+      "human_approval_required": false,
+      "evidence_refs": [
+        "observability evidence",
+        "qa_result"
+      ],
+      "notes": "Support is required for all later operational stages and for incident investigation and auditability."
+    },
+    {
+      "stage_id": "13",
+      "title": "STEP 13 — Live-Trading Safety Architecture",
+      "description": "Define the read-only market-data boundary, API permissions, kill switch, and capital safeguards required before any controlled live-money trial is considered. This stage remains architecture and safety validation only; it must not enable live trading.",
+      "parent_stage_id": null,
+      "depends_on": ["12"],
+      "risk_level": "critical",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "exchange boundary definition",
+        "API permissions and access model",
+        "capital, position, and loss safeguards",
+        "paper/live separation definition",
+        "emergency kill-switch design",
+        "production deployment control design",
+        "human activation approval requirement"
+      ],
+      "exit_criteria": [
+        "Strict paper/live separation is explicit and enforced",
+        "READ + TRADE API permissions are documented and no withdrawal path exists",
+        "Hard capital limit, hard position limit, hard per-trade risk limit, daily loss limit, and maximum open positions are defined",
+        "API or network failure results in no new trade being created, and an independent emergency kill switch can stop execution",
+        "Production deployment controls are explicit, and human approval remains required before any live activation",
+        "This stage creates safety architecture only and does not enable live trading"
+      ],
+      "human_approval_required": true,
+      "evidence_refs": [
+        "safety_result",
+        "human approval evidence"
+      ],
+      "notes": "This is the first explicit live-money architecture stage and still does not perform live trading. The objective is explicit safety validation and approval gating."
+    },
+    {
+      "stage_id": "13.1",
+      "title": "13.1 — API Boundary and Permission Model",
+      "description": "Define the live exchange boundary, API permissions, and controls that ensure read-only market data, trade support, no-withdrawal behavior, and fail-safe production boundaries.",
+      "parent_stage_id": "13",
+      "depends_on": ["12"],
+      "risk_level": "critical",
+      "owner": "architect",
+      "target_workflow_state": "READY",
+      "required_evidence": [
+        "READ + TRADE permission model",
+        "NO WITHDRAWAL policy",
+        "independent kill switch",
+        "hard capital limit",
+        "hard position limit",
+        "hard per-trade risk limit",
+        "daily loss limit",
+        "maximum open positions",
+        "production deployment controls"
+      ],
+      "exit_criteria": [
+        "Permissions are restricted, auditable, and separated from any withdrawal path",
+        "No withdrawal path exists and live operational access is bounded by explicit hard limits",
+        "Trade and market access remain intentionally bounded and fail-safe under API or network failure",
+        "Independent emergency kill switch and human approval gate are the only approved activation path to live operation",
+        "The production controls explicitly prevent unsafe live activation without review"
+      ],
+      "human_approval_required": true,
+      "evidence_refs": [
+        "safety_result",
+        "human approval evidence"
+      ],
+      "notes": "Order placement and withdrawal permissions are denied by design. Live activation remains blocked until explicit human approval and safety evidence exist."
+    },
+    {
+      "stage_id": "14",
+      "title": "STEP 14 — ~€10 Controlled Live Test",
+      "description": "Run a minimal, controlled live-money test with hard limits and explicit human approval, treating the objective as system validation and operational safety rather than profit generation. The first live test exists to prove the real-money pipeline behaves as designed, not to maximize profit.",
+      "parent_stage_id": null,
+      "depends_on": ["13"],
+      "risk_level": "critical",
+      "owner": "human",
+      "target_workflow_state": "HUMAN_APPROVAL",
+      "required_evidence": [
+        "preflight validation",
+        "paper-trading evidence",
+        "safety verification",
+        "kill-switch verification",
+        "live-test result",
+        "human approval evidence",
+        "paper-vs-live comparison evidence",
+        "actual fill and fee evidence"
+      ],
+      "exit_criteria": [
+        "Preflight checklist is completed with evidence and human approval before activation",
+        "Capital is limited to approximately €10 and is spot-only with no leverage",
+        "Strict risk limits are enforced, including daily loss, position, and per-trade risk guardrails",
+        "Paper-vs-live comparison is performed and actual fills, fees, spread, slippage, and latency are measured against the simulated assumptions",
+        "Unexpected execution, state divergence, abnormal loss, and telemetry failure conditions are actively monitored",
+        "Automatic kill conditions remain active throughout the test and human STOP/CONTINUE decisions remain active for the full trial",
+        "The primary objective is to prove the real-money pipeline behaves as designed rather than to maximize profit"
+      ],
+      "human_approval_required": true,
+      "evidence_refs": [
+        "live-test result",
+        "human approval evidence",
+        "paper-trading result"
+      ],
+      "notes": "The purpose is validation and operational safety, not maximizing profit. Any evidence of a breaching or diverging live path blocks continuation."
+    },
+    {
+      "stage_id": "14.1",
+      "title": "14.1 — Preflight and Pre-Launch Validation",
+      "description": "Verify historical validity, paper-trading comparison, observability, and safety checks before any live-money trading begins. This is the explicit launch gate for the first real-money test.",
+      "parent_stage_id": "14",
+      "depends_on": ["13"],
+      "risk_level": "critical",
+      "owner": "qa",
+      "target_workflow_state": "QA",
+      "required_evidence": [
+        "historical validation evidence",
+        "paper-trading evidence",
+        "safety and observability check evidence",
+        "preflight checklist evidence",
+        "kill-switch verification evidence",
+        "human approval evidence"
+      ],
+      "exit_criteria": [
+        "No unverified risk path remains before live activation",
+        "Operational telemetry, alerts, and observability are functioning and auditable",
+        "Human approval is required before launch and documented in evidence",
+        "Actual live behavior is expected to match the validated risk and execution model; any unresolved discrepancy blocks activation",
+        "The first live test begins only after all preflight safety checks and comparison evidence are complete"
+      ],
+      "human_approval_required": true,
+      "evidence_refs": [
+        "validation_result",
+        "safety_result",
+        "human approval evidence"
+      ],
+      "notes": "This is the final gate prior to live-money activation and must produce evidence, not assumptions."
+    },
+    {
+      "stage_id": "15",
+      "title": "STEP 15 — Controlled Scaling",
+      "description": "Increase capital only in controlled increments, requiring evidence of stability and human approval at each step. Capital growth is a controlled operational decision, not an automatic recovery mechanism for losses.",
+      "parent_stage_id": null,
+      "depends_on": ["14"],
+      "risk_level": "critical",
+      "owner": "human",
+      "target_workflow_state": "HUMAN_APPROVAL",
+      "required_evidence": [
+        "performance evidence",
+        "risk evidence",
+        "drawdown evidence",
+        "ops reliability evidence",
+        "human approval evidence",
+        "live-test result"
+      ],
+      "exit_criteria": [
+        "Each scale-up is evidence-based and reviewed with explicit human approval",
+        "Capital growth is controlled and staged rather than automatic",
+        "Performance, risk, stability, and operations remain within approved limits before any increase",
+        "No automatic scaling compensates for performance deterioration or losses",
+        "The system must demonstrate continued stability and risk control before any additional capital increases are approved"
+      ],
+      "human_approval_required": true,
+      "evidence_refs": [
+        "live-test result",
+        "human approval evidence"
+      ],
+      "notes": "Illustrative capital stages are €10 → €12–15 → €20 → €25 → €40 → ≤€50, with human approval required at each step. Scale-up is evidence-driven and human-controlled."
+    },
+    {
+      "stage_id": "15.1",
+      "title": "15.1 — Controlled Capital Increases",
+      "description": "Apply increase steps conservatively only after performance, drawdown, risk, and operational stability have remained acceptable. Any degradation or risk regression blocks additional scaling.",
+      "parent_stage_id": "15",
+      "depends_on": ["14"],
+      "risk_level": "critical",
+      "owner": "human",
+      "target_workflow_state": "HUMAN_APPROVAL",
+      "required_evidence": [
+        "expectancy evidence",
+        "risk and drawdown evidence",
+        "execution-quality evidence",
+        "operational reliability evidence",
+        "human approval evidence"
+      ],
+      "exit_criteria": [
+        "Scale-up remains within hard guardrails and approved thresholds",
+        "Evidence is reviewed before any increase and is explicitly approved by a human owner",
+        "Any degradation in performance, risk, or operational reliability blocks further scaling",
+        "No capital increase is permitted as an automatic response to losses or volatility"
+      ],
+      "human_approval_required": true,
+      "evidence_refs": [
+        "live-test result",
+        "human approval evidence"
+      ],
+      "notes": "Capital increases are explicit human decisions, not automatic responses to performance changes."
+    }
+  ]
+}
