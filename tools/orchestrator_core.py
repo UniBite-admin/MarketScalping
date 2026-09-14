@@ -119,14 +119,23 @@ class TaskStore:
         return None
 
     def _write_all_tasks(self, tasks: List[Dict[str, Any]]):
-        # write to temp and replace to avoid partial writes
+        # write to temp and replace to avoid partial writes. The Windows replace path
+        # is sensitive to lingering file handles, so we close the temp handle once and
+        # then fall back to a safe remove/recreate sequence if replace fails.
         fd, tmp = tempfile.mkstemp(prefix="tasks", dir=self.root)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 for t in tasks:
                     f.write(json.dumps(t, ensure_ascii=False) + "\n")
-                self._fsync_and_close(f)
-            os.replace(tmp, self.tasks_file)
+                f.flush()
+                os.fsync(f.fileno())
+
+            try:
+                os.replace(tmp, self.tasks_file)
+            except PermissionError:
+                if os.path.exists(self.tasks_file):
+                    os.remove(self.tasks_file)
+                os.replace(tmp, self.tasks_file)
         finally:
             if os.path.exists(tmp):
                 try:
@@ -886,6 +895,114 @@ class Orchestrator:
             if parent_stage_id is not None:
                 metadata["parent_stage_id"] = parent_stage_id
         return self.store.create_task(title, description, created_by, extra=metadata)
+
+    def record_human_approval(
+        self,
+        task_id: str,
+        decision: str,
+        actor: str,
+        reason: str,
+        evidence_refs: List[Dict[str, Any]],
+        timestamp_utc: str,
+        workflow_state_at_decision: str,
+        policy_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Persist a deterministic human approval/rejection record in the task artifact model.
+
+        This method does not advance workflow state or bypass any workflow validation.
+        It only records the human decision as evidence for the existing HUMAN_APPROVAL gate.
+        """
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise ValueError("task_id is required")
+        task = self.store.read_task(task_id)
+        if task is None:
+            raise ValueError(f"task not found: {task_id}")
+
+        decision = str(decision or "").upper()
+        if decision not in {"APPROVE", "REJECT"}:
+            raise ValueError("decision must be APPROVE or REJECT")
+
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor is required")
+
+        if not isinstance(workflow_state_at_decision, str) or not workflow_state_at_decision.strip():
+            raise ValueError("workflow_state_at_decision is required")
+        if task.get("status") != workflow_state_at_decision:
+            raise ValueError("approval context is stale relative to current task state")
+        if task.get("status") != "HUMAN_APPROVAL":
+            raise ValueError("task is not in the HUMAN_APPROVAL state")
+
+        try:
+            dt = datetime.fromisoformat(timestamp_utc.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                raise ValueError
+        except Exception as exc:  # pragma: no cover - defensive validation
+            raise ValueError("timestamp_utc must be a valid ISO-8601 UTC timestamp") from exc
+
+        if not isinstance(evidence_refs, list):
+            raise ValueError("evidence_refs must be a list")
+        for ref in evidence_refs:
+            if not isinstance(ref, dict):
+                raise ValueError("evidence references must be dict entries")
+            if not isinstance(ref.get("artifact_id"), str) or not ref.get("artifact_id").strip():
+                raise ValueError("each evidence_ref requires a valid artifact_id")
+            if not isinstance(ref.get("artifact_type"), str) or not ref.get("artifact_type").strip():
+                raise ValueError("each evidence_ref requires a valid artifact_type")
+
+        if reason is None:
+            reason = ""
+        reason = str(reason)
+
+        prev_records = [
+            a for a in (task.get("artifacts") or [])
+            if isinstance(a, dict) and a.get("artifact_type") == "human_approval_record"
+        ]
+        if prev_records:
+            raise ValueError("duplicate approval decision for this task and workflow state")
+
+        approval_context = policy_context if isinstance(policy_context, dict) else {}
+        record_payload = {
+            "task_id": task_id,
+            "decision": decision,
+            "actor": actor,
+            "reason": reason,
+            "evidence_refs": evidence_refs,
+            "timestamp_utc": timestamp_utc,
+            "workflow_state_at_decision": workflow_state_at_decision,
+            "policy_context": approval_context,
+        }
+        record_fingerprint = json.dumps(record_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        approval_record_id = hashlib.sha256(record_fingerprint.encode("utf-8")).hexdigest()
+
+        record = {
+            "approval_record_id": approval_record_id,
+            "task_id": task_id,
+            "decision": decision,
+            "actor": actor,
+            "reason": reason,
+            "evidence_refs": evidence_refs,
+            "timestamp_utc": timestamp_utc,
+            "workflow_state_at_decision": workflow_state_at_decision,
+            "policy_context": approval_context,
+        }
+
+        artifact = {
+            "artifact_id": approval_record_id,
+            "artifact_type": "human_approval_record",
+            "task_id": task_id,
+            "run_id": None,
+            "producer": actor,
+            "created_at": timestamp_utc,
+            "content": record,
+        }
+
+        self.store.append_artifact(task_id, artifact)
+
+        task_spec = dict(task.get("task_spec") or {}) if isinstance(task.get("task_spec"), dict) else {}
+        task_spec["human_approval_record"] = record
+        self.store.update_task(task_id, {"task_spec": task_spec})
+        return record
 
     def record_ci_result(self, task_id: str, run_id: str, status: str, command: str, evidence: Any,
                         repository_revision: Optional[str] = None, producer: str = "ci") -> Dict[str, Any]:
