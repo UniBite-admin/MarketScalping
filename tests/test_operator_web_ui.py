@@ -41,6 +41,25 @@ class LocalOperatorWebUITests(unittest.TestCase):
         status, body = self._fetch(path)
         return status, json.loads(body)
 
+    def _post_json(self, path, payload):
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                payload = response.read().decode("utf-8")
+                return response.status, json.loads(payload)
+        except urllib.error.HTTPError as exc:
+            payload = exc.read().decode("utf-8")
+            try:
+                return exc.code, json.loads(payload)
+            except json.JSONDecodeError:
+                return exc.code, {"error": payload}
+
     def test_server_starts_through_intended_entry_point(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", 0))
@@ -174,6 +193,284 @@ class LocalOperatorWebUITests(unittest.TestCase):
         self.assertNotIn("sk_live_12345", body)
         self.assertNotIn("super-secret", body)
         self.assertIn("safe context", body)
+
+    def test_web_approve_route_accepts_valid_human_approval(self):
+        task = self.orch.create_task("web-approve-ok", description="web approval", created_by="tester")
+        self.orch.store.append_transition(task["task_id"], "HUMAN_APPROVAL", "orchestrator")
+        self.orch.store.append_policy_result(task["task_id"], {
+            "policy_id": "require_human_approval",
+            "decision": "REQUIRE_HUMAN_APPROVAL",
+            "triggered": True,
+            "reason": "requires human approval",
+        })
+        self.orch.store.append_artifact(task["task_id"], {
+            "artifact_id": "approve-artifact",
+            "artifact_type": "safety_result",
+            "task_id": task["task_id"],
+            "producer": "safety",
+            "created_at": "2026-09-14T12:00:00Z",
+            "content": {"decision": "PASS", "summary": "safe"},
+        })
+
+        status, payload = self._post_json(f"/api/tasks/{task['task_id']}/approval", {
+            "decision": "APPROVE",
+            "actor": "human",
+            "reason": "risk gate satisfied",
+            "evidence_refs": [{"artifact_id": "approve-artifact", "artifact_type": "safety_result"}],
+            "confirm": True,
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["record"]["decision"], "APPROVE")
+        self.assertIn(task["task_id"], json.dumps(payload))
+
+    def test_web_reject_route_accepts_valid_human_rejection(self):
+        task = self.orch.create_task("web-reject-ok", description="web rejection", created_by="tester")
+        self.orch.store.append_transition(task["task_id"], "HUMAN_APPROVAL", "orchestrator")
+        self.orch.store.append_policy_result(task["task_id"], {
+            "policy_id": "require_human_approval",
+            "decision": "REQUIRE_HUMAN_APPROVAL",
+            "triggered": True,
+            "reason": "requires human approval",
+        })
+
+        status, payload = self._post_json(f"/api/tasks/{task['task_id']}/approval", {
+            "decision": "REJECT",
+            "actor": "human",
+            "reason": "needs more analysis",
+            "evidence_refs": [],
+            "confirm": True,
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["record"]["decision"], "REJECT")
+
+    def test_web_approval_requires_actor(self):
+        task = self.orch.create_task("web-no-actor", description="missing actor", created_by="tester")
+        self.orch.store.append_transition(task["task_id"], "HUMAN_APPROVAL", "orchestrator")
+        self.orch.store.append_policy_result(task["task_id"], {
+            "policy_id": "require_human_approval",
+            "decision": "REQUIRE_HUMAN_APPROVAL",
+            "triggered": True,
+            "reason": "requires human approval",
+        })
+
+        status, payload = self._post_json(f"/api/tasks/{task['task_id']}/approval", {
+            "decision": "APPROVE",
+            "reason": "missing actor",
+            "evidence_refs": [],
+            "confirm": True,
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("actor", payload["error"].lower())
+
+    def test_web_approval_requires_reason(self):
+        task = self.orch.create_task("web-no-reason", description="missing reason", created_by="tester")
+        self.orch.store.append_transition(task["task_id"], "HUMAN_APPROVAL", "orchestrator")
+        self.orch.store.append_policy_result(task["task_id"], {
+            "policy_id": "require_human_approval",
+            "decision": "REQUIRE_HUMAN_APPROVAL",
+            "triggered": True,
+            "reason": "requires human approval",
+        })
+
+        status, payload = self._post_json(f"/api/tasks/{task['task_id']}/approval", {
+            "decision": "APPROVE",
+            "actor": "human",
+            "evidence_refs": [],
+            "confirm": True,
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("reason", payload["error"].lower())
+
+    def test_web_approval_requires_confirmation(self):
+        task = self.orch.create_task("web-no-confirm", description="missing confirm", created_by="tester")
+        self.orch.store.append_transition(task["task_id"], "HUMAN_APPROVAL", "orchestrator")
+        self.orch.store.append_policy_result(task["task_id"], {
+            "policy_id": "require_human_approval",
+            "decision": "REQUIRE_HUMAN_APPROVAL",
+            "triggered": True,
+            "reason": "requires human approval",
+        })
+
+        status, payload = self._post_json(f"/api/tasks/{task['task_id']}/approval", {
+            "decision": "APPROVE",
+            "actor": "human",
+            "reason": "needs confirm",
+            "evidence_refs": [],
+            "confirm": False,
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("confirm", payload["error"].lower())
+
+    def test_web_approval_rejects_invalid_decision(self):
+        task = self.orch.create_task("web-bad-decision", description="bad decision", created_by="tester")
+        self.orch.store.append_transition(task["task_id"], "HUMAN_APPROVAL", "orchestrator")
+        self.orch.store.append_policy_result(task["task_id"], {
+            "policy_id": "require_human_approval",
+            "decision": "REQUIRE_HUMAN_APPROVAL",
+            "triggered": True,
+            "reason": "requires human approval",
+        })
+
+        status, payload = self._post_json(f"/api/tasks/{task['task_id']}/approval", {
+            "decision": "MAYBE",
+            "actor": "human",
+            "reason": "bad decision",
+            "evidence_refs": [],
+            "confirm": True,
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("decision", payload["error"].lower())
+
+    def test_web_approval_rejects_malformed_json(self):
+        task = self.orch.create_task("web-bad-json", description="bad json", created_by="tester")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/tasks/{task['task_id']}/approval",
+            data=b'{"decision":',
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            self.fail("malformed request unexpectedly succeeded")
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            self.assertEqual(exc.code, 400)
+            self.assertIn("json", payload["error"].lower())
+
+    def test_web_approval_unknown_task_is_404(self):
+        status, payload = self._post_json("/api/tasks/missing-task/approval", {
+            "decision": "APPROVE",
+            "actor": "human",
+            "reason": "unknown task",
+            "evidence_refs": [],
+            "confirm": True,
+        })
+        self.assertEqual(status, 404)
+        self.assertIn("task not found", payload["error"].lower())
+
+    def test_web_approval_rejects_wrong_workflow_state(self):
+        task = self.orch.create_task("web-wrong-state", description="wrong state", created_by="tester")
+        self.orch.store.append_transition(task["task_id"], "QA", "orchestrator")
+
+        status, payload = self._post_json(f"/api/tasks/{task['task_id']}/approval", {
+            "decision": "APPROVE",
+            "actor": "human",
+            "reason": "state mismatch",
+            "evidence_refs": [],
+            "confirm": True,
+        })
+        self.assertIn(status, {400, 409})
+        self.assertIn("state", payload["error"].lower())
+
+    def test_web_approval_rejects_policy_not_required(self):
+        task = self.orch.create_task("web-policy-no", description="policy not required", created_by="tester")
+        self.orch.store.append_transition(task["task_id"], "HUMAN_APPROVAL", "orchestrator")
+        self.orch.store.append_policy_result(task["task_id"], {
+            "policy_id": "require_human_approval",
+            "decision": "NO_ACTION",
+            "triggered": False,
+            "reason": "no approval required",
+        })
+
+        status, payload = self._post_json(f"/api/tasks/{task['task_id']}/approval", {
+            "decision": "APPROVE",
+            "actor": "human",
+            "reason": "should not pass",
+            "evidence_refs": [],
+            "confirm": True,
+        })
+        self.assertIn(status, {400, 409})
+        self.assertIn("approval", payload["error"].lower())
+
+    def test_web_approval_rejects_duplicate_approval(self):
+        task = self.orch.create_task("web-duplicate", description="duplicate", created_by="tester")
+        self.orch.store.append_transition(task["task_id"], "HUMAN_APPROVAL", "orchestrator")
+        self.orch.store.append_policy_result(task["task_id"], {
+            "policy_id": "require_human_approval",
+            "decision": "REQUIRE_HUMAN_APPROVAL",
+            "triggered": True,
+            "reason": "requires human approval",
+        })
+        self.orch.record_human_approval(
+            task_id=task["task_id"],
+            decision="APPROVE",
+            actor="human",
+            reason="already recorded",
+            evidence_refs=[],
+            timestamp_utc="2026-09-14T12:00:00Z",
+            workflow_state_at_decision="HUMAN_APPROVAL",
+            policy_context={"policy_id": "require_human_approval"},
+        )
+
+        status, payload = self._post_json(f"/api/tasks/{task['task_id']}/approval", {
+            "decision": "APPROVE",
+            "actor": "human",
+            "reason": "second approval",
+            "evidence_refs": [],
+            "confirm": True,
+        })
+        self.assertIn(status, {400, 409})
+        self.assertIn("duplicate", payload["error"].lower())
+
+    def test_web_approval_validates_evidence_refs_shape(self):
+        task = self.orch.create_task("web-evidence-bad", description="bad evidence", created_by="tester")
+        self.orch.store.append_transition(task["task_id"], "HUMAN_APPROVAL", "orchestrator")
+        self.orch.store.append_policy_result(task["task_id"], {
+            "policy_id": "require_human_approval",
+            "decision": "REQUIRE_HUMAN_APPROVAL",
+            "triggered": True,
+            "reason": "requires human approval",
+        })
+
+        status, payload = self._post_json(f"/api/tasks/{task['task_id']}/approval", {
+            "decision": "APPROVE",
+            "actor": "human",
+            "reason": "bad evidence",
+            "evidence_refs": [{"artifact_id": 123}],
+            "confirm": True,
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("evidence", payload["error"].lower())
+
+    def test_web_approval_unsupported_method_is_rejected(self):
+        task = self.orch.create_task("web-unsupported", description="unsupported", created_by="tester")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/tasks/{task['task_id']}/approval",
+            method="GET",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            self.fail("unsupported method unexpectedly succeeded")
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            self.assertEqual(exc.code, 405)
+            self.assertIn("method", payload["error"].lower())
+
+    def test_web_approval_uses_orchestrator_authority(self):
+        task = self.orch.create_task("web-authoritative", description="authoritative", created_by="tester")
+        self.orch.store.append_transition(task["task_id"], "HUMAN_APPROVAL", "orchestrator")
+        self.orch.store.append_policy_result(task["task_id"], {
+            "policy_id": "require_human_approval",
+            "decision": "REQUIRE_HUMAN_APPROVAL",
+            "triggered": True,
+            "reason": "requires human approval",
+        })
+
+        before = json.dumps(self.orch.store.read_task(task["task_id"]), sort_keys=True)
+        status, payload = self._post_json(f"/api/tasks/{task['task_id']}/approval", {
+            "decision": "APPROVE",
+            "actor": "human",
+            "reason": "authoritative path",
+            "evidence_refs": [],
+            "confirm": True,
+        })
+        after = json.dumps(self.orch.store.read_task(task["task_id"]), sort_keys=True)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertNotEqual(before, after)
+        self.assertTrue(any(a.get("artifact_type") == "human_approval_record" for a in self.orch.store.read_task(task["task_id"]).get("artifacts", [])))
 
 
 if __name__ == "__main__":

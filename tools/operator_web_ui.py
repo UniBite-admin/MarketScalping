@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import threading
+from datetime import datetime
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterable, List, Optional
@@ -104,6 +105,65 @@ class LocalOperatorWebServer:
     def _task_list_payload(self) -> List[Dict[str, Any]]:
         tasks = self.orch.store.list_tasks()
         return [_sanitize_task(task) for task in tasks]
+
+    def _approval_payload(self, task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("request JSON must be an object")
+
+        decision = payload.get("decision")
+        if not isinstance(decision, str) or decision.upper() not in {"APPROVE", "REJECT"}:
+            raise ValueError("decision must be APPROVE or REJECT")
+
+        actor = payload.get("actor")
+        if not isinstance(actor, str) or not actor.strip():
+            raise ValueError("actor is required")
+
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason is required")
+
+        confirm = payload.get("confirm")
+        if confirm is not True:
+            raise ValueError("confirm must be explicitly true")
+
+        evidence_refs_raw = payload.get("evidence_refs", [])
+        if evidence_refs_raw is None:
+            evidence_refs_raw = []
+        if not isinstance(evidence_refs_raw, list):
+            raise ValueError("evidence_refs must be a list")
+
+        evidence_refs: List[Dict[str, str]] = []
+        for ref in evidence_refs_raw:
+            if not isinstance(ref, dict):
+                raise ValueError("each evidence_ref must be an object")
+            artifact_id = ref.get("artifact_id")
+            artifact_type = ref.get("artifact_type")
+            if not isinstance(artifact_id, str) or not artifact_id.strip():
+                raise ValueError("each evidence_ref requires artifact_id")
+            if not isinstance(artifact_type, str) or not artifact_type.strip():
+                raise ValueError("each evidence_ref requires artifact_type")
+            evidence_refs.append({"artifact_id": artifact_id, "artifact_type": artifact_type})
+
+        task = self.orch.store.read_task(task_id)
+        if task is None:
+            raise KeyError(task_id)
+
+        policy_context = {}
+        for item in task.get("policy_results") or []:
+            if isinstance(item, dict) and item.get("triggered") is True and str(item.get("decision") or "").upper() == "REQUIRE_HUMAN_APPROVAL":
+                policy_context = item
+                break
+
+        return self.orch.record_human_approval(
+            task_id=task_id,
+            decision=str(decision).upper(),
+            actor=str(actor).strip(),
+            reason=str(reason).strip(),
+            evidence_refs=evidence_refs,
+            timestamp_utc=datetime.utcnow().isoformat() + "Z",
+            workflow_state_at_decision="HUMAN_APPROVAL",
+            policy_context=policy_context,
+        )
 
     def _dashboard_html(self) -> str:
         return """
@@ -282,6 +342,88 @@ class LocalOperatorWebServer:
       `;
     }
 
+    function renderApprovalForm(task) {
+      const detailNode = document.getElementById('task-detail');
+      if (!detailNode || !task || (task.status || '').toUpperCase() !== 'HUMAN_APPROVAL') {
+        return;
+      }
+
+      const formHtml = `
+        <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid #d1d5db;">
+          <div style="font-weight: bold; margin-bottom: 8px;">HUMAN APPROVAL REQUIRED</div>
+          <div style="display: grid; gap: 8px; max-width: 420px;">
+            <label>Actor<br /><input id="approval-actor" type="text" placeholder="operator" style="width: 100%; box-sizing: border-box;" /></label>
+            <label>Reason<br /><textarea id="approval-reason" rows="3" placeholder="Explain the decision" style="width: 100%; box-sizing: border-box;"></textarea></label>
+            <label>Evidence refs (optional, artifact_id:artifact_type, comma-separated)<br /><input id="approval-evidence" type="text" placeholder="artifact-id:safety_result" style="width: 100%; box-sizing: border-box;" /></label>
+            <label><input id="approval-confirm" type="checkbox" /> I confirm this decision.</label>
+            <div style="display: flex; gap: 8px;">
+              <button id="approve-button" type="button">APPROVE</button>
+              <button id="reject-button" type="button">REJECT</button>
+            </div>
+            <div id="approval-message" class="muted"></div>
+          </div>
+        </div>
+      `;
+      detailNode.innerHTML = `${renderTaskDetail(task)}${formHtml}`;
+
+      async function submitApproval(decision) {
+        const actor = document.getElementById('approval-actor').value.trim();
+        const reason = document.getElementById('approval-reason').value.trim();
+        const confirm = document.getElementById('approval-confirm').checked;
+        const evidenceValue = document.getElementById('approval-evidence').value.trim();
+
+        const evidenceRefs = evidenceValue
+          ? evidenceValue.split(',').map(item => item.trim()).filter(Boolean).map(item => {
+              const [artifactId, artifactType] = item.split(':').map(part => part.trim());
+              if (!artifactId || !artifactType) {
+                throw new Error('Evidence must use artifact_id:artifact_type format.');
+              }
+              return { artifact_id: artifactId, artifact_type: artifactType };
+            })
+          : [];
+
+        if (!actor) throw new Error('Actor is required.');
+        if (!reason) throw new Error('Reason is required.');
+        if (!confirm) throw new Error('Confirmation is required.');
+
+        const response = await fetch(`/api/tasks/${encodeURIComponent(task.task_id)}/approval`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision, actor, reason, evidence_refs: evidenceRefs, confirm: true }),
+        });
+
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.error || 'Approval request rejected by the server.');
+        }
+        return payload;
+      }
+
+      document.getElementById('approve-button').addEventListener('click', async () => {
+        try {
+          const payload = await submitApproval('APPROVE');
+          document.getElementById('approval-message').textContent = `APPROVE recorded: ${payload.record.approval_record_id}`;
+          const refreshed = await fetchJson(`/api/tasks/${encodeURIComponent(task.task_id)}`);
+          document.getElementById('task-detail').innerHTML = renderTaskDetail(refreshed);
+          renderApprovalForm(refreshed);
+        } catch (error) {
+          document.getElementById('approval-message').textContent = error.message || 'Approval failed.';
+        }
+      });
+
+      document.getElementById('reject-button').addEventListener('click', async () => {
+        try {
+          const payload = await submitApproval('REJECT');
+          document.getElementById('approval-message').textContent = `REJECT recorded: ${payload.record.approval_record_id}`;
+          const refreshed = await fetchJson(`/api/tasks/${encodeURIComponent(task.task_id)}`);
+          document.getElementById('task-detail').innerHTML = renderTaskDetail(refreshed);
+          renderApprovalForm(refreshed);
+        } catch (error) {
+          document.getElementById('approval-message').textContent = error.message || 'Approval failed.';
+        }
+      });
+    }
+
     function escape(value) {
       return String(value)
         .replace(/&/g, '&amp;')
@@ -336,6 +478,7 @@ class LocalOperatorWebServer:
               const detail = await fetchJson(`/api/tasks/${encodeURIComponent(id)}`);
               document.getElementById('task-detail').style.display = 'block';
               document.getElementById('task-detail').innerHTML = renderTaskDetail(detail);
+              renderApprovalForm(detail);
             });
             taskTable.appendChild(row);
           }
@@ -394,6 +537,8 @@ class LocalOperatorWebServer:
             return self._json_response(self._task_list_payload())
 
         if path.startswith("/api/tasks/"):
+            if path.endswith("/approval"):
+                return self._send_error(405, "Method not allowed: GET is not allowed for approval actions")
             task_id = path.split("/api/tasks/", 1)[1].strip("/")
             if not task_id:
                 return self._send_error(404, "Task not found")
@@ -404,6 +549,30 @@ class LocalOperatorWebServer:
             return self._json_response(task)
 
         return self._send_error(404, "Not found")
+
+    def _handle_post(self, path: str, raw_body: bytes) -> bytes:
+        if not path.startswith("/api/tasks/") or not path.endswith("/approval"):
+            return self._send_error(404, "Not found")
+
+        task_id = path[len("/api/tasks/") : -len("/approval")].strip("/")
+        if not task_id:
+            return self._send_error(404, "Task not found")
+
+        try:
+            payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self._send_error(400, "invalid JSON body")
+
+        try:
+            record = self._approval_payload(task_id, payload)
+        except KeyError:
+            return self._send_error(404, f"Task not found: {task_id}")
+        except ValueError as exc:
+            return self._send_error(400, str(exc))
+        except Exception as exc:  # pragma: no cover - authoritative contract drives remaining validation
+            return self._send_error(409, str(exc))
+
+        return self._json_response({"ok": True, "task_id": task_id, "record": record})
 
     def start(self) -> "LocalOperatorWebServer":
         self.httpd = ThreadingHTTPServer((self.host, self.port), self._make_handler())
@@ -441,6 +610,49 @@ class LocalOperatorWebServer:
                     self.send_header("Content-Length", str(len(out)))
                     self.end_headers()
                     self.wfile.write(out)
+
+            def do_POST(self):
+                parsed = urlparse(self.path)
+                try:
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+                    response = app._handle_post(parsed.path, raw_body)
+                    self.wfile.write(response)
+                except Exception:
+                    payload = {"error": "internal server error"}
+                    out = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(out)))
+                    self.end_headers()
+                    self.wfile.write(out)
+
+            def do_PUT(self):
+                payload = {"error": "Method not allowed"}
+                out = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(405)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def do_DELETE(self):
+                payload = {"error": "Method not allowed"}
+                out = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(405)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def do_PATCH(self):
+                payload = {"error": "Method not allowed"}
+                out = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(405)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
 
             def log_message(self, format: str, *args: Any) -> None:
                 return

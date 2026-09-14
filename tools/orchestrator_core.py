@@ -933,6 +933,22 @@ class Orchestrator:
         if task.get("status") != "HUMAN_APPROVAL":
             raise ValueError("task is not in the HUMAN_APPROVAL state")
 
+        requires_human_approval = any(
+            isinstance(item, dict)
+            and item.get("triggered") is True
+            and str(item.get("decision") or "").upper() == "REQUIRE_HUMAN_APPROVAL"
+            for item in (task.get("policy_results") or [])
+        )
+        policy_context = policy_context if isinstance(policy_context, dict) else {}
+        if not requires_human_approval:
+            policy_id = str(policy_context.get("policy_id") or "").lower()
+            policy_decision = str(policy_context.get("decision") or "").upper()
+            if not (
+                policy_id == "require_human_approval"
+                or policy_decision == "REQUIRE_HUMAN_APPROVAL"
+            ):
+                raise ValueError("task does not currently require human approval")
+
         try:
             dt = datetime.fromisoformat(timestamp_utc.replace("Z", "+00:00"))
             if dt.tzinfo is None:
