@@ -136,14 +136,14 @@ class OperatorConsoleTests(unittest.TestCase):
         self.assertIn("[ERROR]", output)
         self.assertIn("Unknown command", output)
 
-    def test_create_routes_through_existing_orchestrator(self):
+    def test_create_fails_closed_without_repository_revision(self):
         before = self.orch.store.list_tasks()
         output = self.console.handle_command("create 6C.2")
         after = self.orch.store.list_tasks()
-        self.assertEqual(len(after), len(before) + 1)
-        self.assertIn("[SUCCESS]", output)
+        self.assertEqual(len(after), len(before))
+        self.assertIn("[BLOCKED]", output)
         self.assertIn("6C.2", output)
-        self.assertTrue(any(task.get("roadmap_stage_id") == "6C.2" for task in after))
+        self.assertFalse(any(task.get("roadmap_stage_id") == "6C.2" for task in after))
 
     def test_ux_does_not_directly_mutate_authoritative_state_on_status(self):
         before = self.orch.store.list_tasks()

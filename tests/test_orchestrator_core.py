@@ -28,6 +28,26 @@ class OrchestratorCoreTests(unittest.TestCase):
         ts.append_artifact(tid, {"name": "a"})
         self.assertTrue(any(a["name"] == "a" for a in ts.read_task(tid)["artifacts"]))
 
+    def test_orchestrator_create_task_preserves_repository_revision(self):
+        orch = Orchestrator()
+        task = orch.create_task("revision-check", description="revision propagation", created_by="tester", repository_revision="test-revision")
+        self.assertEqual(task["repository_revision"], "test-revision")
+        persisted = orch.store.read_task(task["task_id"])
+        self.assertEqual(persisted["repository_revision"], "test-revision")
+
+    def test_orchestrator_create_task_preserves_roadmap_metadata(self):
+        orch = Orchestrator()
+        task = orch.create_task("roadmap-check", description="roadmap metadata", created_by="tester", roadmap_stage_id="6C.1")
+        self.assertEqual(task["roadmap_stage_id"], "6C.1")
+        self.assertEqual(task["roadmap_id"], "marketscalping_master_roadmap")
+        self.assertEqual(task["roadmap_version"], "2026.09.13")
+        self.assertEqual(task["status"], "BACKLOG")
+
+    def test_operator_task_without_repository_revision_fails_closed(self):
+        orch = Orchestrator()
+        with self.assertRaises(ValueError):
+            orch.create_task("operator-without-revision", description="operator task", created_by="operator")
+
     def test_policy_driven_retry_limits(self):
         tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json")
         try:
@@ -158,6 +178,34 @@ class OrchestratorCoreTests(unittest.TestCase):
         tid = t["task_id"]
         res = orch.transition_task(tid, "TRIAGE", actor="tester")
         self.assertIn(res["status"], ("ok", "blocked", "pending_safety_review", "pending_human_approval", "noop"))
+
+    def test_agent_runner_dispatches_known_roles_and_orchestrator_runs_next_ready_task(self):
+        orch = Orchestrator()
+        task_id = "task-123"
+        task_spec = {
+            "task_record": {"task_id": task_id, "title": "dispatch check", "authorized": True, "status": "READY"},
+            "architecture_result": {"task_id": task_id, "run_id": "arch-1", "repository_revision": "repo-123", "architecture_assessment": {"summary": "ok"}, "affected_components": ["market_data.py"], "proposed_changes": ["Add logic"], "acceptance_criteria": ["works"], "developer_specification": {"files": ["market_data.py"], "high_level_changes": ["Add logic"]}, "adr_required": False, "status": "READY"},
+            "repository_context": {"file_list": ["market_data.py"], "files": ["market_data.py"]},
+            "repository_revision": "repo-123",
+            "orchestrator_authorization": {"authorized": True, "task_id": task_id},
+            "scope": ["market_data.py"],
+            "implementation_target": "market_data.py",
+            "run_id": "dev-run-1",
+        }
+        task = orch.create_task("dispatch check", description="dispatch", created_by="tester", repository_revision="repo-123")
+        tid = task["task_id"]
+        task_spec["task_record"]["task_id"] = tid
+        task_spec["architecture_result"]["task_id"] = tid
+        task_spec["orchestrator_authorization"]["task_id"] = tid
+        orch.store.update_task(tid, {"status": "READY", "task_spec": task_spec})
+
+        result = orch.agent_runner.run("DEVELOPER", {"task_id": tid, "task_spec": task_spec, "run_id": "dev-run-1", "repository_revision": "repo-123"})
+        self.assertEqual(result["agent_id"], "DEVELOPER")
+        self.assertIn(result["status"], {"SUCCEEDED", "FAILED"})
+
+        dispatch = orch.dispatch_next_task()
+        self.assertEqual(dispatch["status"], "ok")
+        self.assertEqual(orch.store.read_task(tid)["status"], "DEVELOPMENT")
 
     def _developer_task_payload(self, task_id: str, run_id: str = "dev-run-1"):
         return {

@@ -401,17 +401,68 @@ class PolicyEvaluator:
 
 
 class AgentRunner:
-    """Stubbed AgentRunner interface. Does not invoke models or external systems.
+    """Dispatch known workflow agents through the existing local runtime contracts.
 
-    Later this can be extended to call Architect/Developer/QA/Safety workers.
+    This is deliberately narrow: it routes only the canonical workflow roles used by
+    the Orchestrator and returns the execution outcome in a machine-readable payload.
     """
 
     def __init__(self):
         pass
 
     def run(self, agent_id: str, task: Dict[str, Any]) -> Dict[str, Any]:
-        # Return a dummy result suitable for integration tests. No side effects.
-        return {"agent_id": agent_id, "status": "ok", "message": "stub"}
+        role = str(agent_id or "").upper()
+        if not isinstance(task, dict):
+            return {"agent_id": role, "status": "FAILED", "message": "task must be a mapping"}
+
+        task_id = str(task.get("task_id") or "")
+        repository_revision = str(task.get("repository_revision") or task.get("task_spec", {}).get("repository_revision") or "unknown")
+        run_id = str(task.get("run_id") or task.get("task_spec", {}).get("run_id") or uuid.uuid4())
+        task_spec = task.get("task_spec") if isinstance(task.get("task_spec"), dict) else {}
+
+        executor_map = {
+            "ARCHITECT": ArchitectExecutor,
+            "DEVELOPER": DeveloperExecutor,
+            "QA": QAExecutor,
+            "SAFETY": SafetyExecutor,
+        }
+        executor_cls = executor_map.get(role)
+        if executor_cls is None:
+            return {"agent_id": role, "status": "SKIPPED", "message": "unsupported role", "task_id": task_id}
+
+        req = InvocationRequest(
+            task_id=task_id,
+            agent_role=role,
+            repository_revision=repository_revision,
+            worktree=None,
+            task_spec=task_spec,
+            input_artifacts=task.get("artifacts", []) if isinstance(task.get("artifacts"), list) else [],
+            policy_context=task.get("policy_context") if isinstance(task.get("policy_context"), dict) else {},
+            timeout_seconds=60,
+            attempt=int(task.get("attempt", 0) or 0),
+            run_id=run_id,
+        )
+        try:
+            result = executor_cls().execute(req)
+            return {
+                "agent_id": role,
+                "task_id": task_id,
+                "run_id": result.run_id,
+                "status": result.status,
+                "message": "dispatched",
+                "proposed_next_state": result.proposed_next_state,
+                "artifacts": result.output_artifacts,
+                "error": result.error,
+            }
+        except Exception as exc:  # pragma: no cover - defensive shim
+            return {
+                "agent_id": role,
+                "task_id": task_id,
+                "run_id": run_id,
+                "status": "FAILED",
+                "message": str(exc),
+                "error": {"type": exc.__class__.__name__, "message": str(exc)},
+            }
 
 
 class Orchestrator:
@@ -869,10 +920,21 @@ class Orchestrator:
         return self.roadmap_loader.determine_eligibility(stage_id, completed_stage_ids=completed_stage_ids, repo_root=ROOT)
 
     def create_task(self, title: str, description: str = "", created_by: str = "system",
+                    repository_revision: Optional[str] = None,
                     roadmap_stage_id: Optional[str] = None, roadmap_id: Optional[str] = None,
                     roadmap_version: Optional[str] = None, parent_stage_id: Optional[str] = None,
                     **kwargs) -> Dict[str, Any]:
         metadata: Dict[str, Any] = dict(kwargs)
+        if repository_revision is None:
+            repository_revision = metadata.pop("repository_revision", None)
+        repository_revision = None if repository_revision is None else str(repository_revision)
+
+        if created_by == "operator" and (repository_revision is None or not repository_revision.strip()):
+            raise ValueError("repository_revision is required for operator-created tasks")
+
+        if repository_revision is not None:
+            metadata["repository_revision"] = repository_revision
+
         if roadmap_stage_id is not None:
             metadata["roadmap_stage_id"] = str(roadmap_stage_id)
             if self.roadmap_loader is not None:
@@ -894,7 +956,8 @@ class Orchestrator:
                 metadata["roadmap_version"] = roadmap_version
             if parent_stage_id is not None:
                 metadata["parent_stage_id"] = parent_stage_id
-        return self.store.create_task(title, description, created_by, extra=metadata)
+        task = self.store.create_task(title, description, created_by, repository_revision=repository_revision, extra=metadata)
+        return task
 
     def record_human_approval(
         self,
@@ -1054,6 +1117,48 @@ class Orchestrator:
             task_spec["repository_revision"] = repo_rev
         self.store.update_task(task_id, {"task_spec": task_spec})
         return artifact
+
+    def dispatch_next_task(self, actor: str = "orchestrator") -> Dict[str, Any]:
+        """Advance the next actionable workflow task using the authoritative state machine.
+
+        This is the missing execution/dispatch layer: it resolves the next READY or
+        in-flight task and invokes the same orchestrator transitions that are already
+        defined in the workflow and policy engine. It intentionally does not create
+        a parallel task system or a second workflow authority.
+        """
+        tasks = self.store.list_tasks()
+        if not tasks:
+            return {"status": "noop", "reason": "no_tasks"}
+
+        ordered = sorted(tasks, key=lambda item: (item.get("created_at") or "", item.get("task_id") or ""))
+        for task in ordered:
+            if not isinstance(task, dict):
+                continue
+            status = str(task.get("status") or "UNKNOWN").upper()
+            if status in {"BACKLOG", "TRIAGE", "ARCHITECTURE", "READY", "DEVELOPMENT", "CI", "QA", "SAFETY", "HUMAN_APPROVAL", "MERGE"}:
+                task_id = task.get("task_id")
+                if not task_id:
+                    continue
+                if status == "BACKLOG":
+                    result = self.transition_task(task_id, "TRIAGE", actor=actor)
+                elif status == "TRIAGE":
+                    result = self.transition_task(task_id, "ARCHITECTURE", actor=actor)
+                elif status == "READY":
+                    result = self.transition_task(task_id, "DEVELOPMENT", actor=actor)
+                elif status == "DEVELOPMENT":
+                    result = self.transition_task(task_id, "CI", actor=actor)
+                elif status == "CI":
+                    result = self.transition_task(task_id, "QA", actor=actor)
+                elif status == "QA":
+                    result = self.transition_task(task_id, "SAFETY", actor=actor)
+                elif status == "SAFETY":
+                    result = self.transition_task(task_id, "HUMAN_APPROVAL", actor=actor)
+                elif status == "HUMAN_APPROVAL":
+                    result = self.transition_task(task_id, "MERGE", actor=actor)
+                else:
+                    result = {"status": "noop", "reason": "no_transition_defined"}
+                return {"status": result.get("status"), "task_id": task_id, "result": result, "actor": actor}
+        return {"status": "noop", "reason": "no_actionable_task"}
 
     def transition_task(self, task_id: str, target_state: str, actor: str) -> Dict[str, Any]:
         # Acquire lock
