@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tools.operator_console import OperatorConsole
 from tools.orchestrator_core import Orchestrator
@@ -13,10 +14,17 @@ def _clean_orch():
         shutil.rmtree(od)
 
 
+def _set_bootstrap_revision(value: str = "repo-bootstrap-123"):
+    os.environ["MARKETSCALPING_REPOSITORY_REVISION"] = value
+
+
 class OperatorConsoleTests(unittest.TestCase):
     def setUp(self):
         _clean_orch()
-        self.orch = Orchestrator(store_root=tempfile.mkdtemp(prefix="orch-console-"))
+        os.environ.pop("MARKETSCALPING_REPOSITORY_REVISION", None)
+        os.environ.pop("REPOSITORY_REVISION", None)
+        with patch.object(Orchestrator, "_detect_repository_revision", return_value="console-auto-head"):
+            self.orch = Orchestrator(store_root=tempfile.mkdtemp(prefix="orch-console-"))
         self.console = OperatorConsole(orch=self.orch)
 
     def test_console_starts_and_help_works(self):
@@ -136,14 +144,56 @@ class OperatorConsoleTests(unittest.TestCase):
         self.assertIn("[ERROR]", output)
         self.assertIn("Unknown command", output)
 
-    def test_create_fails_closed_without_repository_revision(self):
+    def test_create_uses_automatic_repository_revision(self):
         before = self.orch.store.list_tasks()
         output = self.console.handle_command("create 6C.2")
         after = self.orch.store.list_tasks()
-        self.assertEqual(len(after), len(before))
-        self.assertIn("[BLOCKED]", output)
+        self.assertEqual(len(after), len(before) + 1)
+        self.assertIn("[SUCCESS]", output)
         self.assertIn("6C.2", output)
-        self.assertFalse(any(task.get("roadmap_stage_id") == "6C.2" for task in after))
+        created = next(task for task in after if task.get("roadmap_stage_id") == "6C.2")
+        self.assertTrue(created.get("repository_revision"))
+        self.assertEqual(created.get("repository_revision"), self.orch.repository_revision)
+        self.assertEqual(created.get("repository_revision"), "console-auto-head")
+
+    def test_dispatch_calls_orchestrator_dispatch_next_task_once(self):
+        with patch.object(Orchestrator, "dispatch_next_task", return_value={"status": "ok", "task_id": "task-123", "result": {"status": "ok"}}) as mock_dispatch:
+            output = self.console.handle_command("dispatch")
+        mock_dispatch.assert_called_once_with()
+        self.assertIn("[SUCCESS] DISPATCH", output)
+        self.assertIn("task-123", output)
+        self.assertIn("status: OK", output)
+
+    def test_dispatch_renders_blocked_result_without_crashing(self):
+        with patch.object(Orchestrator, "dispatch_next_task", return_value={"status": "blocked", "task_id": "task-456", "reason": "blocked by policy"}) as mock_dispatch:
+            output = self.console.handle_command("dispatch")
+        mock_dispatch.assert_called_once_with()
+        self.assertIn("[WARN] DISPATCH", output)
+        self.assertIn("task-456", output)
+        self.assertIn("blocked by policy", output)
+
+    def test_dispatch_render_handles_noop_result(self):
+        with patch.object(Orchestrator, "dispatch_next_task", return_value={"status": "noop", "reason": "no actionable task"}) as mock_dispatch:
+            output = self.console.handle_command("dispatch")
+        mock_dispatch.assert_called_once_with()
+        self.assertIn("[INFO] DISPATCH", output)
+        self.assertIn("NOOP", output)
+        self.assertIn("no actionable task", output)
+
+    def test_help_includes_dispatch_command(self):
+        output = self.console.handle_command("help")
+        self.assertIn("dispatch", output.lower())
+        self.assertIn("execute the next deterministic operator action through the Orchestrator", output)
+
+    def test_next_stays_read_only_after_dispatch_command(self):
+        task = self.orch.create_task("next-read-only", description="read only check", created_by="tester")
+        before = self.orch.store.read_task(task["task_id"]) 
+        before_history = list(before.get("history", []))
+        output = self.console.handle_command("next")
+        after = self.orch.store.read_task(task["task_id"])
+        self.assertEqual(before, after)
+        self.assertEqual(before_history, list(after.get("history", [])))
+        self.assertIn("NEXT ACTION", output)
 
     def test_ux_does_not_directly_mutate_authoritative_state_on_status(self):
         before = self.orch.store.list_tasks()

@@ -8,6 +8,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import uuid
 from datetime import datetime
@@ -466,7 +468,9 @@ class AgentRunner:
 
 
 class Orchestrator:
-    def __init__(self, policies_path: Optional[str] = None, store_root: Optional[str] = None, roadmap_path: Optional[str] = None):
+    def __init__(self, policies_path: Optional[str] = None, store_root: Optional[str] = None, roadmap_path: Optional[str] = None,
+                 repository_revision: Optional[str] = None):
+        self.repository_revision = self._resolve_repository_revision(repository_revision)
         self.store = TaskStore(root=store_root)
         self.wf = WorkflowEngine()
         self.pe = PolicyEvaluator(policies_path=policies_path)
@@ -496,6 +500,57 @@ class Orchestrator:
             self.loop_threshold = il_cfg.get("action", {}).get("threshold", 5)
         else:
             self.loop_threshold = 5  # explicit fallback
+
+    @staticmethod
+    def _normalize_repository_revision(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @staticmethod
+    def _detect_repository_revision(repo_root: Optional[str] = None) -> Optional[str]:
+        candidate_root = repo_root or ROOT
+        if not isinstance(candidate_root, str) or not candidate_root.strip():
+            return None
+        if not os.path.isdir(candidate_root):
+            return None
+
+        git_executable = shutil.which("git")
+        if not git_executable:
+            return None
+
+        try:
+            result = subprocess.run(
+                [git_executable, "rev-parse", "HEAD"],
+                cwd=candidate_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return None
+
+        revision = (result.stdout or "").strip()
+        return revision or None
+
+    def _resolve_repository_revision(self, repository_revision: Optional[str]) -> Optional[str]:
+        if repository_revision is not None:
+            explicit = self._normalize_repository_revision(repository_revision)
+            if explicit is None:
+                raise ValueError("repository_revision must be a non-empty string")
+            return explicit
+
+        auto_revision = self._detect_repository_revision()
+        if auto_revision is not None:
+            return auto_revision
+
+        for env_key in ("MARKETSCALPING_REPOSITORY_REVISION", "REPOSITORY_REVISION"):
+            env_revision = self._normalize_repository_revision(os.environ.get(env_key))
+            if env_revision is not None:
+                return env_revision
+
+        return None
 
     def _project_task_record(self, value: Any) -> Any:
         if not isinstance(value, dict):
@@ -927,7 +982,12 @@ class Orchestrator:
         metadata: Dict[str, Any] = dict(kwargs)
         if repository_revision is None:
             repository_revision = metadata.pop("repository_revision", None)
-        repository_revision = None if repository_revision is None else str(repository_revision)
+        if repository_revision is None:
+            repository_revision = self.repository_revision
+        else:
+            repository_revision = self._normalize_repository_revision(repository_revision)
+            if repository_revision is None:
+                raise ValueError("repository_revision is required for operator-created tasks")
 
         if created_by == "operator" and (repository_revision is None or not repository_revision.strip()):
             raise ValueError("repository_revision is required for operator-created tasks")

@@ -13,9 +13,15 @@ def _clean_orch():
         shutil.rmtree(od)
 
 
+def _set_bootstrap_revision(value: str = "repo-bootstrap-123"):
+    os.environ["MARKETSCALPING_REPOSITORY_REVISION"] = value
+
+
 class OrchestratorCoreTests(unittest.TestCase):
     def setUp(self):
         _clean_orch()
+        os.environ.pop("MARKETSCALPING_REPOSITORY_REVISION", None)
+        os.environ.pop("REPOSITORY_REVISION", None)
 
     def test_taskstore_create_read_update(self):
         ts = TaskStore()
@@ -43,10 +49,37 @@ class OrchestratorCoreTests(unittest.TestCase):
         self.assertEqual(task["roadmap_version"], "2026.09.13")
         self.assertEqual(task["status"], "BACKLOG")
 
-    def test_operator_task_without_repository_revision_fails_closed(self):
-        orch = Orchestrator()
-        with self.assertRaises(ValueError):
-            orch.create_task("operator-without-revision", description="operator task", created_by="operator")
+    def test_automatic_repository_revision_resolution_uses_git_head(self):
+        with patch.object(Orchestrator, "_detect_repository_revision", return_value="auto-head-123"):
+            orch = Orchestrator()
+            self.assertEqual(orch.repository_revision, "auto-head-123")
+
+    def test_orchestrator_bootstrap_provides_repository_revision_for_operator_tasks(self):
+        with patch.object(Orchestrator, "_detect_repository_revision", return_value="auto-head-123"):
+            orch = Orchestrator()
+            self.assertEqual(orch.repository_revision, "auto-head-123")
+            task = orch.create_task("operator-with-revision", description="operator task", created_by="operator", roadmap_stage_id="6C.2")
+            self.assertEqual(task["repository_revision"], orch.repository_revision)
+            persisted = orch.store.read_task(task["task_id"])
+            self.assertEqual(persisted["repository_revision"], orch.repository_revision)
+
+    def test_explicit_revision_precedes_automatic_resolution(self):
+        with patch.object(Orchestrator, "_detect_repository_revision", return_value="auto-head-123"):
+            orch = Orchestrator(repository_revision="explicit-456")
+            self.assertEqual(orch.repository_revision, "explicit-456")
+            task = orch.create_task("explicit-revision", description="explicit precedence", created_by="tester")
+            self.assertEqual(task["repository_revision"], "explicit-456")
+
+    def test_invalid_repository_revision_fails_closed(self):
+        with patch.dict(os.environ, {"MARKETSCALPING_REPOSITORY_REVISION": ""}, clear=True):
+            with self.assertRaises(ValueError):
+                Orchestrator(repository_revision="")
+
+    def test_repository_resolution_failure_fails_closed(self):
+        with patch.object(Orchestrator, "_detect_repository_revision", return_value=None):
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(ValueError):
+                    Orchestrator().create_task("missing-revision", description="fail closed", created_by="operator")
 
     def test_policy_driven_retry_limits(self):
         tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json")

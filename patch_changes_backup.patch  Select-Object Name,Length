@@ -1,0 +1,247 @@
+[1mdiff --git a/tests/test_operator_console.py b/tests/test_operator_console.py[m
+[1mindex 38dd665..8fecb25 100644[m
+[1m--- a/tests/test_operator_console.py[m
+[1m+++ b/tests/test_operator_console.py[m
+[36m@@ -136,14 +136,14 @@[m [mclass OperatorConsoleTests(unittest.TestCase):[m
+         self.assertIn("[ERROR]", output)[m
+         self.assertIn("Unknown command", output)[m
+ [m
+[31m-    def test_create_routes_through_existing_orchestrator(self):[m
+[32m+[m[32m    def test_create_fails_closed_without_repository_revision(self):[m
+         before = self.orch.store.list_tasks()[m
+         output = self.console.handle_command("create 6C.2")[m
+         after = self.orch.store.list_tasks()[m
+[31m-        self.assertEqual(len(after), len(before) + 1)[m
+[31m-        self.assertIn("[SUCCESS]", output)[m
+[32m+[m[32m        self.assertEqual(len(after), len(before))[m
+[32m+[m[32m        self.assertIn("[BLOCKED]", output)[m
+         self.assertIn("6C.2", output)[m
+[31m-        self.assertTrue(any(task.get("roadmap_stage_id") == "6C.2" for task in after))[m
+[32m+[m[32m        self.assertFalse(any(task.get("roadmap_stage_id") == "6C.2" for task in after))[m
+ [m
+     def test_ux_does_not_directly_mutate_authoritative_state_on_status(self):[m
+         before = self.orch.store.list_tasks()[m
+[1mdiff --git a/tests/test_orchestrator_core.py b/tests/test_orchestrator_core.py[m
+[1mindex f499ed4..f353dac 100644[m
+[1m--- a/tests/test_orchestrator_core.py[m
+[1m+++ b/tests/test_orchestrator_core.py[m
+[36m@@ -28,6 +28,26 @@[m [mclass OrchestratorCoreTests(unittest.TestCase):[m
+         ts.append_artifact(tid, {"name": "a"})[m
+         self.assertTrue(any(a["name"] == "a" for a in ts.read_task(tid)["artifacts"]))[m
+ [m
+[32m+[m[32m    def test_orchestrator_create_task_preserves_repository_revision(self):[m
+[32m+[m[32m        orch = Orchestrator()[m
+[32m+[m[32m        task = orch.create_task("revision-check", description="revision propagation", created_by="tester", repository_revision="test-revision")[m
+[32m+[m[32m        self.assertEqual(task["repository_revision"], "test-revision")[m
+[32m+[m[32m        persisted = orch.store.read_task(task["task_id"])[m
+[32m+[m[32m        self.assertEqual(persisted["repository_revision"], "test-revision")[m
+[32m+[m
+[32m+[m[32m    def test_orchestrator_create_task_preserves_roadmap_metadata(self):[m
+[32m+[m[32m        orch = Orchestrator()[m
+[32m+[m[32m        task = orch.create_task("roadmap-check", description="roadmap metadata", created_by="tester", roadmap_stage_id="6C.1")[m
+[32m+[m[32m        self.assertEqual(task["roadmap_stage_id"], "6C.1")[m
+[32m+[m[32m        self.assertEqual(task["roadmap_id"], "marketscalping_master_roadmap")[m
+[32m+[m[32m        self.assertEqual(task["roadmap_version"], "2026.09.13")[m
+[32m+[m[32m        self.assertEqual(task["status"], "BACKLOG")[m
+[32m+[m
+[32m+[m[32m    def test_operator_task_without_repository_revision_fails_closed(self):[m
+[32m+[m[32m        orch = Orchestrator()[m
+[32m+[m[32m        with self.assertRaises(ValueError):[m
+[32m+[m[32m            orch.create_task("operator-without-revision", description="operator task", created_by="operator")[m
+[32m+[m
+     def test_policy_driven_retry_limits(self):[m
+         tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json")[m
+         try:[m
+[36m@@ -159,6 +179,34 @@[m [mclass OrchestratorCoreTests(unittest.TestCase):[m
+         res = orch.transition_task(tid, "TRIAGE", actor="tester")[m
+         self.assertIn(res["status"], ("ok", "blocked", "pending_safety_review", "pending_human_approval", "noop"))[m
+ [m
+[32m+[m[32m    def test_agent_runner_dispatches_known_roles_and_orchestrator_runs_next_ready_task(self):[m
+[32m+[m[32m        orch = Orchestrator()[m
+[32m+[m[32m        task_id = "task-123"[m
+[32m+[m[32m        task_spec = {[m
+[32m+[m[32m            "task_record": {"task_id": task_id, "title": "dispatch check", "authorized": True, "status": "READY"},[m
+[32m+[m[32m            "architecture_result": {"task_id": task_id, "run_id": "arch-1", "repository_revision": "repo-123", "architecture_assessment": {"summary": "ok"}, "affected_components": ["market_data.py"], "proposed_changes": ["Add logic"], "acceptance_criteria": ["works"], "developer_specification": {"files": ["market_data.py"], "high_level_changes": ["Add logic"]}, "adr_required": False, "status": "READY"},[m
+[32m+[m[32m            "repository_context": {"file_list": ["market_data.py"], "files": ["market_data.py"]},[m
+[32m+[m[32m            "repository_revision": "repo-123",[m
+[32m+[m[32m            "orchestrator_authorization": {"authorized": True, "task_id": task_id},[m
+[32m+[m[32m            "scope": ["market_data.py"],[m
+[32m+[m[32m            "implementation_target": "market_data.py",[m
+[32m+[m[32m            "run_id": "dev-run-1",[m
+[32m+[m[32m        }[m
+[32m+[m[32m        task = orch.create_task("dispatch check", description="dispatch", created_by="tester", repository_revision="repo-123")[m
+[32m+[m[32m        tid = task["task_id"][m
+[32m+[m[32m        task_spec["task_record"]["task_id"] = tid[m
+[32m+[m[32m        task_spec["architecture_result"]["task_id"] = tid[m
+[32m+[m[32m        task_spec["orchestrator_authorization"]["task_id"] = tid[m
+[32m+[m[32m        orch.store.update_task(tid, {"status": "READY", "task_spec": task_spec})[m
+[32m+[m
+[32m+[m[32m        result = orch.agent_runner.run("DEVELOPER", {"task_id": tid, "task_spec": task_spec, "run_id": "dev-run-1", "repository_revision": "repo-123"})[m
+[32m+[m[32m        self.assertEqual(result["agent_id"], "DEVELOPER")[m
+[32m+[m[32m        self.assertIn(result["status"], {"SUCCEEDED", "FAILED"})[m
+[32m+[m
+[32m+[m[32m        dispatch = orch.dispatch_next_task()[m
+[32m+[m[32m        self.assertEqual(dispatch["status"], "ok")[m
+[32m+[m[32m        self.assertEqual(orch.store.read_task(tid)["status"], "DEVELOPMENT")[m
+[32m+[m
+     def _developer_task_payload(self, task_id: str, run_id: str = "dev-run-1"):[m
+         return {[m
+             "task_record": {[m
+[1mdiff --git a/tools/orchestrator_core.py b/tools/orchestrator_core.py[m
+[1mindex 0beb25d..19babf6 100644[m
+[1m--- a/tools/orchestrator_core.py[m
+[1m+++ b/tools/orchestrator_core.py[m
+[36m@@ -401,17 +401,68 @@[m [mclass PolicyEvaluator:[m
+ [m
+ [m
+ class AgentRunner:[m
+[31m-    """Stubbed AgentRunner interface. Does not invoke models or external systems.[m
+[32m+[m[32m    """Dispatch known workflow agents through the existing local runtime contracts.[m
+ [m
+[31m-    Later this can be extended to call Architect/Developer/QA/Safety workers.[m
+[32m+[m[32m    This is deliberately narrow: it routes only the canonical workflow roles used by[m
+[32m+[m[32m    the Orchestrator and returns the execution outcome in a machine-readable payload.[m
+     """[m
+ [m
+     def __init__(self):[m
+         pass[m
+ [m
+     def run(self, agent_id: str, task: Dict[str, Any]) -> Dict[str, Any]:[m
+[31m-        # Return a dummy result suitable for integration tests. No side effects.[m
+[31m-        return {"agent_id": agent_id, "status": "ok", "message": "stub"}[m
+[32m+[m[32m        role = str(agent_id or "").upper()[m
+[32m+[m[32m        if not isinstance(task, dict):[m
+[32m+[m[32m            return {"agent_id": role, "status": "FAILED", "message": "task must be a mapping"}[m
+[32m+[m
+[32m+[m[32m        task_id = str(task.get("task_id") or "")[m
+[32m+[m[32m        repository_revision = str(task.get("repository_revision") or task.get("task_spec", {}).get("repository_revision") or "unknown")[m
+[32m+[m[32m        run_id = str(task.get("run_id") or task.get("task_spec", {}).get("run_id") or uuid.uuid4())[m
+[32m+[m[32m        task_spec = task.get("task_spec") if isinstance(task.get("task_spec"), dict) else {}[m
+[32m+[m
+[32m+[m[32m        executor_map = {[m
+[32m+[m[32m            "ARCHITECT": ArchitectExecutor,[m
+[32m+[m[32m            "DEVELOPER": DeveloperExecutor,[m
+[32m+[m[32m            "QA": QAExecutor,[m
+[32m+[m[32m            "SAFETY": SafetyExecutor,[m
+[32m+[m[32m        }[m
+[32m+[m[32m        executor_cls = executor_map.get(role)[m
+[32m+[m[32m        if executor_cls is None:[m
+[32m+[m[32m            return {"agent_id": role, "status": "SKIPPED", "message": "unsupported role", "task_id": task_id}[m
+[32m+[m
+[32m+[m[32m        req = InvocationRequest([m
+[32m+[m[32m            task_id=task_id,[m
+[32m+[m[32m            agent_role=role,[m
+[32m+[m[32m            repository_revision=repository_revision,[m
+[32m+[m[32m            worktree=None,[m
+[32m+[m[32m            task_spec=task_spec,[m
+[32m+[m[32m            input_artifacts=task.get("artifacts", []) if isinstance(task.get("artifacts"), list) else [],[m
+[32m+[m[32m            policy_context=task.get("policy_context") if isinstance(task.get("policy_context"), dict) else {},[m
+[32m+[m[32m            timeout_seconds=60,[m
+[32m+[m[32m            attempt=int(task.get("attempt", 0) or 0),[m
+[32m+[m[32m            run_id=run_id,[m
+[32m+[m[32m        )[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            result = executor_cls().execute(req)[m
+[32m+[m[32m            return {[m
+[32m+[m[32m                "agent_id": role,[m
+[32m+[m[32m                "task_id": task_id,[m
+[32m+[m[32m                "run_id": result.run_id,[m
+[32m+[m[32m                "status": result.status,[m
+[32m+[m[32m                "message": "dispatched",[m
+[32m+[m[32m                "proposed_next_state": result.proposed_next_state,[m
+[32m+[m[32m                "artifacts": result.output_artifacts,[m
+[32m+[m[32m                "error": result.error,[m
+[32m+[m[32m            }[m
+[32m+[m[32m        except Exception as exc:  # pragma: no cover - defensive shim[m
+[32m+[m[32m            return {[m
+[32m+[m[32m                "agent_id": role,[m
+[32m+[m[32m                "task_id": task_id,[m
+[32m+[m[32m                "run_id": run_id,[m
+[32m+[m[32m                "status": "FAILED",[m
+[32m+[m[32m                "message": str(exc),[m
+[32m+[m[32m                "error": {"type": exc.__class__.__name__, "message": str(exc)},[m
+[32m+[m[32m            }[m
+ [m
+ [m
+ class Orchestrator:[m
+[36m@@ -869,10 +920,21 @@[m [mclass Orchestrator:[m
+         return self.roadmap_loader.determine_eligibility(stage_id, completed_stage_ids=completed_stage_ids, repo_root=ROOT)[m
+ [m
+     def create_task(self, title: str, description: str = "", created_by: str = "system",[m
+[32m+[m[32m                    repository_revision: Optional[str] = None,[m
+                     roadmap_stage_id: Optional[str] = None, roadmap_id: Optional[str] = None,[m
+                     roadmap_version: Optional[str] = None, parent_stage_id: Optional[str] = None,[m
+                     **kwargs) -> Dict[str, Any]:[m
+         metadata: Dict[str, Any] = dict(kwargs)[m
+[32m+[m[32m        if repository_revision is None:[m
+[32m+[m[32m            repository_revision = metadata.pop("repository_revision", None)[m
+[32m+[m[32m        repository_revision = None if repository_revision is None else str(repository_revision)[m
+[32m+[m
+[32m+[m[32m        if created_by == "operator" and (repository_revision is None or not repository_revision.strip()):[m
+[32m+[m[32m            raise ValueError("repository_revision is required for operator-created tasks")[m
+[32m+[m
+[32m+[m[32m        if repository_revision is not None:[m
+[32m+[m[32m            metadata["repository_revision"] = repository_revision[m
+[32m+[m
+         if roadmap_stage_id is not None:[m
+             metadata["roadmap_stage_id"] = str(roadmap_stage_id)[m
+             if self.roadmap_loader is not None:[m
+[36m@@ -894,7 +956,8 @@[m [mclass Orchestrator:[m
+                 metadata["roadmap_version"] = roadmap_version[m
+             if parent_stage_id is not None:[m
+                 metadata["parent_stage_id"] = parent_stage_id[m
+[31m-        return self.store.create_task(title, description, created_by, extra=metadata)[m
+[32m+[m[32m        task = self.store.create_task(title, description, created_by, repository_revision=repository_revision, extra=metadata)[m
+[32m+[m[32m        return task[m
+ [m
+     def record_human_approval([m
+         self,[m
+[36m@@ -1055,6 +1118,48 @@[m [mclass Orchestrator:[m
+         self.store.update_task(task_id, {"task_spec": task_spec})[m
+         return artifact[m
+ [m
+[32m+[m[32m    def dispatch_next_task(self, actor: str = "orchestrator") -> Dict[str, Any]:[m
+[32m+[m[32m        """Advance the next actionable workflow task using the authoritative state machine.[m
+[32m+[m
+[32m+[m[32m        This is the missing execution/dispatch layer: it resolves the next READY or[m
+[32m+[m[32m        in-flight task and invokes the same orchestrator transitions that are already[m
+[32m+[m[32m        defined in the workflow and policy engine. It intentionally does not create[m
+[32m+[m[32m        a parallel task system or a second workflow authority.[m
+[32m+[m[32m        """[m
+[32m+[m[32m        tasks = self.store.list_tasks()[m
+[32m+[m[32m        if not tasks:[m
+[32m+[m[32m            return {"status": "noop", "reason": "no_tasks"}[m
+[32m+[m
+[32m+[m[32m        ordered = sorted(tasks, key=lambda item: (item.get("created_at") or "", item.get("task_id") or ""))[m
+[32m+[m[32m        for task in ordered:[m
+[32m+[m[32m            if not isinstance(task, dict):[m
+[32m+[m[32m                continue[m
+[32m+[m[32m            status = str(task.get("status") or "UNKNOWN").upper()[m
+[32m+[m[32m            if status in {"BACKLOG", "TRIAGE", "ARCHITECTURE", "READY", "DEVELOPMENT", "CI", "QA", "SAFETY", "HUMAN_APPROVAL", "MERGE"}:[m
+[32m+[m[32m                task_id = task.get("task_id")[m
+[32m+[m[32m                if not task_id:[m
+[32m+[m[32m                    continue[m
+[32m+[m[32m                if status == "BACKLOG":[m
+[32m+[m[32m                    result = self.transition_task(task_id, "TRIAGE", actor=actor)[m
+[32m+[m[32m                elif status == "TRIAGE":[m
+[32m+[m[32m                    result = self.transition_task(task_id, "ARCHITECTURE", actor=actor)[m
+[32m+[m[32m                elif status == "READY":[m
+[32m+[m[32m                    result = self.transition_task(task_id, "DEVELOPMENT", actor=actor)[m
+[32m+[m[32m                elif status == "DEVELOPMENT":[m
+[32m+[m[32m                    result = self.transition_task(task_id, "CI", actor=actor)[m
+[32m+[m[32m                elif status == "CI":[m
+[32m+[m[32m                    result = self.transition_task(task_id, "QA", actor=actor)[m
+[32m+[m[32m                elif status == "QA":[m
+[32m+[m[32m                    result = self.transition_task(task_id, "SAFETY", actor=actor)[m
+[32m+[m[32m                elif status == "SAFETY":[m
+[32m+[m[32m                    result = self.transition_task(task_id, "HUMAN_APPROVAL", actor=actor)[m
+[32m+[m[32m                elif status == "HUMAN_APPROVAL":[m
+[32m+[m[32m                    result = self.transition_task(task_id, "MERGE", actor=actor)[m
+[32m+[m[32m                else:[m
+[32m+[m[32m                    result = {"status": "noop", "reason": "no_transition_defined"}[m
+[32m+[m[32m                return {"status": result.get("status"), "task_id": task_id, "result": result, "actor": actor}[m
+[32m+[m[32m        return {"status": "noop", "reason": "no_actionable_task"}[m
+[32m+[m
+     def transition_task(self, task_id: str, target_state: str, actor: str) -> Dict[str, Any]:[m
+         # Acquire lock[m
+         try:[m

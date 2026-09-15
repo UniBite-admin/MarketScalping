@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -18,8 +19,13 @@ def _clean_orch():
 class SafetyAgentTests(unittest.TestCase):
     def setUp(self):
         _clean_orch()
+        self.tmpdir = tempfile.mkdtemp(prefix="orch-safety-")
         self.executor = SafetyExecutor()
         self.runtime = AgentRuntime(executor=self.executor)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        _clean_orch()
 
     def _base_spec(self, **overrides):
         task_record = {
@@ -204,7 +210,7 @@ class SafetyAgentTests(unittest.TestCase):
         self.assertIn(content["severity"], ["CRITICAL", "HIGH", "MEDIUM", "LOW"])
 
     def test_orchestrator_safety_integration_pass(self):
-        orch = Orchestrator()
+        orch = Orchestrator(store_root=self.tmpdir)
         payload = {
             "task_record": {
                 "task_id": "TASK-SAFETY-OK",
@@ -286,7 +292,7 @@ class SafetyAgentTests(unittest.TestCase):
         self.assertTrue(any(a.get("artifact_type") == "safety_result" for a in persisted["artifacts"]))
 
     def test_orchestrator_safety_requires_human_approval(self):
-        orch = Orchestrator()
+        orch = Orchestrator(store_root=self.tmpdir)
         payload = self._base_spec()
         payload["implementation_artifact"] = {
             "artifact_id": "impl-human",
@@ -314,7 +320,7 @@ class SafetyAgentTests(unittest.TestCase):
         self.assertIn(persisted["status"], ["HUMAN_APPROVAL", "SAFETY"])
 
     def test_safety_same_run_id_different_qa_result_blocks(self):
-        orch = Orchestrator()
+        orch = Orchestrator(store_root=self.tmpdir)
         payload = self._base_spec()
         payload["task_record"]["task_id"] = "TASK-SAFETY-ID"
         payload["task_id"] = "TASK-SAFETY-ID"

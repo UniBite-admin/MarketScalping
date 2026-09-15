@@ -437,6 +437,40 @@ class OperatorConsole:
             "- NO operator action required at this time; the current task graph does not require a manual workflow decision."
         )
 
+    def _handle_dispatch(self) -> str:
+        try:
+            result = self.orch.dispatch_next_task()
+        except Exception as exc:  # pragma: no cover - defensive guard
+            return f"[ERROR] Dispatch failed: {exc}"
+
+        payload = result if isinstance(result, dict) else {}
+        status = str(payload.get("status") or "UNKNOWN").upper()
+        task_id = payload.get("task_id") or "n/a"
+        reason = payload.get("reason") or (payload.get("result") or {}).get("reason") or "no action"
+
+        if status in {"NOOP", "NO_ACTIONABLE_TASK", "NO_TASKS"}:
+            return (
+                "[INFO] DISPATCH\n"
+                f"- status: {status}\n"
+                f"- task_id: {task_id}\n"
+                f"- reason: {reason}"
+            )
+
+        if status in {"BLOCKED", "FAILED", "ESCALATED"}:
+            return (
+                "[WARN] DISPATCH\n"
+                f"- status: {status}\n"
+                f"- task_id: {task_id}\n"
+                f"- reason: {reason}"
+            )
+
+        return (
+            "[SUCCESS] DISPATCH\n"
+            f"- task_id: {task_id}\n"
+            f"- status: {status}\n"
+            f"- result: {payload.get('result') or reason}"
+        )
+
     def _handle_help(self) -> str:
         return (
             "[INFO] Available commands:\n"
@@ -448,6 +482,7 @@ class OperatorConsole:
             "  approve <task_id>  - submit a human approval through the Orchestrator\n"
             "  reject <task_id>   - submit a human rejection through the Orchestrator\n"
             "  create <stage_id>  - create a task through the orchestrator\n"
+            "  dispatch           - execute the next deterministic operator action through the Orchestrator\n"
             "  next               - show the next deterministic operator action\n"
             "  help               - show this help\n"
             "  exit               - terminate the console"
@@ -571,6 +606,8 @@ class OperatorConsole:
             if len(tokens) < 2:
                 return "[VALIDATION ERROR] Usage: create <roadmap_stage_id>"
             return self._handle_create(tokens[1])
+        if name == "dispatch":
+            return self._handle_dispatch()
         if name == "next":
             return self._handle_next()
         if name == "help":
