@@ -66,6 +66,18 @@ class ArchitectOrchestratorIntegrationTests(unittest.TestCase):
         # status should have settled to READY for non-adr case
         self.assertIn(task.get("status"), ("READY", "ARCHITECTURE", "BLOCKED", "PENDING_SAFETY_REVIEW"))
 
+    def test_operator_created_task_injects_repository_context_before_architecture(self):
+        task = self.orch.create_task("arch-operator-created", created_by="operator", description="operator task", repository_revision="r-operator")
+        self.orch.transition_task(task["task_id"], "TRIAGE", actor="orchestrator")
+        tid = task["task_id"]
+        res = self.orch.transition_task(tid, "ARCHITECTURE", actor="orchestrator")
+        self.assertEqual(res.get("status"), "ok")
+        persisted = self.orch.store.read_task(tid)
+        task_spec = persisted.get("task_spec") or {}
+        self.assertIsInstance(task_spec.get("repository_context"), dict)
+        self.assertIn("file_list", task_spec["repository_context"])
+        self.assertGreater(len(task_spec["repository_context"]["file_list"]), 0)
+
     def test_runtime_get_result_returns_existing(self):
         t = self.orch.create_task("arch-get-result", created_by="tester", repository_revision="r5", task_spec=self._base_task_spec())
         self.orch.transition_task(t["task_id"], "TRIAGE", actor="orchestrator")

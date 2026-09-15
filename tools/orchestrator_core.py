@@ -767,6 +767,42 @@ class Orchestrator:
                 return "__existing_run_id__"
         return None
 
+    def _build_repository_context(self, task: Optional[Dict[str, Any]] = None, task_spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        base_spec = task_spec if isinstance(task_spec, dict) else {}
+        repo_ctx = base_spec.get("repository_context") if isinstance(base_spec.get("repository_context"), dict) else None
+        if repo_ctx is not None:
+            file_list = repo_ctx.get("file_list") or repo_ctx.get("files") or []
+            normalized = []
+            for entry in file_list:
+                if isinstance(entry, str) and entry.strip():
+                    normalized.append(entry.strip().replace('\\', '/'))
+            if normalized:
+                unique = list(dict.fromkeys(normalized))
+                return {
+                    "repository_revision": (task or {}).get("repository_revision") or self.repository_revision,
+                    "file_list": unique,
+                    "files": unique,
+                    **({"repository_state": repo_ctx.get("repository_state")} if "repository_state" in repo_ctx else {}),
+                }
+
+        file_list: List[str] = []
+        skip_dirs = {".git", ".orchestrator", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules", "logs", "reports", "data"}
+        for root, dirs, files in os.walk(ROOT):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for name in files:
+                rel = os.path.relpath(os.path.join(root, name), ROOT)
+                rel = rel.replace('\\', '/')
+                if rel.startswith(".git/") or rel.startswith(".orchestrator/"):
+                    continue
+                file_list.append(rel)
+
+        unique = sorted(dict.fromkeys(file_list))
+        return {
+            "repository_revision": (task or {}).get("repository_revision") or self.repository_revision,
+            "file_list": unique,
+            "files": unique,
+        }
+
     def _materialize_task_spec_from_artifacts(self, task: Dict[str, Any], task_spec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         merged = dict(task_spec or {})
         artifacts = task.get("artifacts") or []
@@ -802,6 +838,9 @@ class Orchestrator:
                 "status": task.get("status"),
                 "authorized": True,
             }
+
+        if "repository_context" not in merged or not isinstance(merged.get("repository_context"), dict):
+            merged["repository_context"] = self._build_repository_context(task=task, task_spec=merged)
 
         if "repository_revision" not in merged:
             merged["repository_revision"] = task.get("repository_revision")
@@ -1397,7 +1436,10 @@ class Orchestrator:
             # Special handling for ARCHITECTURE: invoke Architect via AgentRuntime
             if target_state == "ARCHITECTURE":
                 # prepare invocation
-                task_spec = task.get("task_spec") or {}
+                task_spec = self._materialize_task_spec_from_artifacts(task, task.get("task_spec") or {})
+                task["task_spec"] = task_spec
+                self.store.update_task(task_id, {"task_spec": task_spec})
+
                 repo_rev = task.get("repository_revision") or task_spec.get("repository_revision")
                 if not repo_rev:
                     # missing repository context -> block
