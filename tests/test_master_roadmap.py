@@ -108,6 +108,27 @@ class MasterRoadmapTests(unittest.TestCase):
         self.assertTrue(task.get("task_id"))
         self.assertNotIn("workflow_state", task)
 
+    def test_stage_7_materializes_first_child_stage_into_task_spec(self):
+        orch = Orchestrator()
+        task = orch.create_task("Stage 7 child materialization", created_by="operator", roadmap_stage_id="7")
+        task_spec = task.get("task_spec") or {}
+        self.assertEqual(task_spec.get("roadmap_parent_stage_id"), "7")
+        self.assertEqual(task_spec.get("roadmap_child_stage_id"), "7.1")
+        self.assertEqual(task_spec.get("roadmap_child_stage_title"), "7.1 — Historical Data Contract / Canonical Schema")
+        self.assertIn("canonical", (task_spec.get("roadmap_child_stage_description") or "").lower())
+        self.assertIn("required_evidence", task_spec)
+        self.assertIn("exit_criteria", task_spec)
+
+    def test_explicit_task_spec_values_are_preserved_when_roadmap_stage_is_materialized(self):
+        orch = Orchestrator()
+        explicit_spec = {"target_paths": ["market_data.py"], "keywords": ["historical"], "repository_context": {"file_list": ["market_data.py"]}}
+        task = orch.create_task("Preserve explicit task spec", created_by="operator", roadmap_stage_id="7", task_spec=explicit_spec)
+        task_spec = task.get("task_spec") or {}
+        self.assertEqual(task_spec.get("target_paths"), ["market_data.py"])
+        self.assertEqual(task_spec.get("keywords"), ["historical"])
+        self.assertEqual(task_spec.get("repository_context"), {"file_list": ["market_data.py"]})
+        self.assertEqual(task_spec.get("roadmap_child_stage_id"), "7.1")
+
     def test_roadmap_cannot_directly_perform_workflow_transitions(self):
         orch = Orchestrator()
         task = orch.create_task("Roadmap cannot bypass workflow", roadmap_stage_id="6C.1")

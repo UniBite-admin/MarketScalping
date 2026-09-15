@@ -689,6 +689,77 @@ class Orchestrator:
                 projected[key] = value[key]
         return projected
 
+    def _resolve_first_executable_child_stage(self, stage_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not self.roadmap_loader or not stage_id:
+            return None
+        child_candidates = []
+        for stage in self.roadmap_loader.document.get("stages", []):
+            if isinstance(stage, dict) and str(stage.get("parent_stage_id") or "").strip() == str(stage_id).strip():
+                child_candidates.append(stage)
+        if not child_candidates:
+            return None
+        ordered = sorted(child_candidates, key=lambda item: str(item.get("stage_id") or ""))
+        return ordered[0]
+
+    def _materialize_roadmap_stage_task_spec(self, task_spec: Optional[Dict[str, Any]], roadmap_stage_id: Optional[str]) -> Dict[str, Any]:
+        merged = dict(task_spec or {}) if isinstance(task_spec, dict) else {}
+        if not self.roadmap_loader or not roadmap_stage_id:
+            return merged
+
+        stage_id = str(roadmap_stage_id).strip()
+        selected_stage = self.roadmap_loader.get_stage(stage_id)
+        child_stage = self._resolve_first_executable_child_stage(stage_id)
+        if child_stage is not None:
+            selected_stage = child_stage
+            if "roadmap_parent_stage_id" not in merged:
+                merged["roadmap_parent_stage_id"] = stage_id
+            if "roadmap_stage_id" not in merged:
+                merged["roadmap_stage_id"] = str(selected_stage.get("stage_id") or "")
+        elif selected_stage is not None:
+            if "roadmap_stage_id" not in merged:
+                merged["roadmap_stage_id"] = str(selected_stage.get("stage_id") or "")
+
+        if selected_stage is None:
+            return merged
+
+        stage_values = {
+            "stage_id": str(selected_stage.get("stage_id") or ""),
+            "title": selected_stage.get("title"),
+            "description": selected_stage.get("description"),
+            "parent_stage_id": selected_stage.get("parent_stage_id"),
+            "depends_on": selected_stage.get("depends_on"),
+            "owner": selected_stage.get("owner"),
+            "risk_level": selected_stage.get("risk_level"),
+            "target_workflow_state": selected_stage.get("target_workflow_state"),
+            "required_evidence": selected_stage.get("required_evidence"),
+            "exit_criteria": selected_stage.get("exit_criteria"),
+            "notes": selected_stage.get("notes"),
+            "human_approval_required": selected_stage.get("human_approval_required"),
+        }
+
+        if "roadmap_stage" not in merged:
+            merged["roadmap_stage"] = stage_values
+        if "roadmap_child_stage_id" not in merged and child_stage is not None:
+            merged["roadmap_child_stage_id"] = str(child_stage.get("stage_id") or "")
+        if "roadmap_child_stage_title" not in merged and child_stage is not None:
+            merged["roadmap_child_stage_title"] = child_stage.get("title")
+        if "roadmap_child_stage_description" not in merged and child_stage is not None:
+            merged["roadmap_child_stage_description"] = child_stage.get("description")
+        if "roadmap_required_evidence" not in merged and selected_stage.get("required_evidence") is not None:
+            merged["roadmap_required_evidence"] = selected_stage.get("required_evidence")
+        if "roadmap_exit_criteria" not in merged and selected_stage.get("exit_criteria") is not None:
+            merged["roadmap_exit_criteria"] = selected_stage.get("exit_criteria")
+        if "roadmap_parent_stage_id" not in merged:
+            merged["roadmap_parent_stage_id"] = selected_stage.get("parent_stage_id")
+        if "roadmap_stage_id" not in merged:
+            merged["roadmap_stage_id"] = str(selected_stage.get("stage_id") or "")
+        if "description" not in merged and selected_stage.get("description") is not None:
+            merged["description"] = selected_stage.get("description")
+        if "title" not in merged and selected_stage.get("title") is not None:
+            merged["title"] = selected_stage.get("title")
+
+        return merged
+
     def _normalize_safety_fingerprint_payload(self, task_spec: Dict[str, Any]) -> Dict[str, Any]:
         canonical = {}
         for key in (
@@ -1044,6 +1115,28 @@ class Orchestrator:
                 metadata["roadmap_version"] = self.roadmap_loader.document.get("version")
                 metadata["parent_stage_id"] = stage.get("parent_stage_id")
                 metadata["target_workflow_state"] = stage.get("target_workflow_state")
+
+                child_stage = self._resolve_first_executable_child_stage(roadmap_stage_id)
+                if child_stage is not None:
+                    metadata["roadmap_parent_stage_id"] = str(roadmap_stage_id)
+                    metadata["roadmap_child_stage_id"] = str(child_stage.get("stage_id") or "")
+                    metadata["roadmap_child_stage_title"] = child_stage.get("title")
+                    metadata["roadmap_child_stage_description"] = child_stage.get("description")
+                    metadata["roadmap_required_evidence"] = child_stage.get("required_evidence")
+                    metadata["roadmap_exit_criteria"] = child_stage.get("exit_criteria")
+                    metadata["roadmap_stage"] = {
+                        "stage_id": child_stage.get("stage_id"),
+                        "title": child_stage.get("title"),
+                        "description": child_stage.get("description"),
+                        "required_evidence": child_stage.get("required_evidence"),
+                        "exit_criteria": child_stage.get("exit_criteria"),
+                    }
+
+                task_spec = metadata.get("task_spec")
+                if isinstance(task_spec, dict):
+                    metadata["task_spec"] = self._materialize_roadmap_stage_task_spec(task_spec, roadmap_stage_id)
+                else:
+                    metadata["task_spec"] = self._materialize_roadmap_stage_task_spec({}, roadmap_stage_id)
             else:
                 metadata["roadmap_id"] = roadmap_id
                 metadata["roadmap_version"] = roadmap_version
