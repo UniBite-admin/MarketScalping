@@ -116,8 +116,10 @@ class MasterRoadmapTests(unittest.TestCase):
         self.assertEqual(task_spec.get("roadmap_child_stage_id"), "7.1")
         self.assertEqual(task_spec.get("roadmap_child_stage_title"), "7.1 — Historical Data Contract / Canonical Schema")
         self.assertIn("canonical", (task_spec.get("roadmap_child_stage_description") or "").lower())
-        self.assertIn("required_evidence", task_spec)
-        self.assertIn("exit_criteria", task_spec)
+        self.assertIn("roadmap_required_evidence", task_spec)
+        self.assertIn("roadmap_exit_criteria", task_spec)
+        self.assertIn("required_evidence", task_spec.get("roadmap_stage") or {})
+        self.assertIn("exit_criteria", task_spec.get("roadmap_stage") or {})
 
     def test_explicit_task_spec_values_are_preserved_when_roadmap_stage_is_materialized(self):
         orch = Orchestrator()

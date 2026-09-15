@@ -77,6 +77,61 @@ class ArchitectAgentTests(unittest.TestCase):
         content = res.output_artifacts[0]["content"]
         self.assertTrue(content.get("adr_required"))
 
+    def test_roadmap_stage_7_1_uses_stage_context_for_repo_investigation(self):
+        ts = {
+            "repository_context": {"file_list": [
+                "market_data.py",
+                "market_data_engine.py",
+                "bitvavo_trade_collector.py",
+                "replay_runner.py",
+                "risk_engine.py",
+                "execution_engine.py",
+                "accounting_engine.py",
+                "position_manager.py",
+                "tools/agent_runtime.py",
+            ]},
+            "roadmap_stage_id": "7.1",
+            "roadmap_child_stage_id": "7.1",
+            "roadmap_child_stage_title": "7.1 — Historical Data Contract / Canonical Schema",
+            "roadmap_child_stage_description": "Define the canonical normalized data contract, raw-vs-normalized boundaries, and required fields for replay and backtesting.",
+            "roadmap_required_evidence": [
+                "canonical schema",
+                "raw/normalized separation",
+                "timestamp and field validation rules",
+            ],
+            "roadmap_exit_criteria": [
+                "Every field is explicitly explained",
+                "Replay input matches canonical contract",
+                "Malformed or missing data is rejected deterministically",
+            ],
+            "roadmap_stage": {
+                "stage_id": "7.1",
+                "title": "7.1 — Historical Data Contract / Canonical Schema",
+                "description": "Define the canonical normalized data contract, raw-vs-normalized boundaries, and required fields for replay and backtesting.",
+                "required_evidence": [
+                    "canonical schema",
+                    "raw/normalized separation",
+                    "timestamp and field validation rules",
+                ],
+                "exit_criteria": [
+                    "Every field is explicitly explained",
+                    "Replay input matches canonical contract",
+                    "Malformed or missing data is rejected deterministically",
+                ],
+                "owner": "data-engineering",
+            },
+        }
+        req = self._make_request(task_spec=ts)
+        res = self.runtime.invoke(req)
+        self.assertEqual(res.status, "SUCCEEDED")
+        content = res.output_artifacts[0]["content"]
+        self.assertIn("roadmap_stage", content.get("architecture_assessment", {}))
+        self.assertTrue(content.get("affected_components"))
+        self.assertIn("market_data.py", content["affected_components"])
+        self.assertIn("market_data_engine.py", content["affected_components"])
+        self.assertTrue(content.get("developer_specification", {}).get("files"))
+        self.assertTrue(content.get("developer_specification", {}).get("high_level_changes"))
+
     def test_architect_cannot_invoke_other_agents(self):
         # ensure result contains no accidental 'invoke' instructions
         req = self._make_request()

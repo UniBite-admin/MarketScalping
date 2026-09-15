@@ -9,6 +9,7 @@ side-effects.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -81,21 +82,47 @@ class ArchitectExecutor(AgentExecutor):
         repo = ts.get("repository_context", {})
         file_list = repo.get("file_list") or repo.get("files") or []
         targets = []
+
+        def add_if_present(candidate):
+            if not candidate:
+                return
+            if candidate in file_list:
+                targets.append(candidate)
+                return
+            base = os.path.basename(str(candidate))
+            if base in file_list:
+                targets.append(base)
+
+        roadmap_stage = ts.get("roadmap_stage") or {}
+        stage_id = str(ts.get("roadmap_stage_id") or ts.get("roadmap_child_stage_id") or "").strip()
+        stage_title = str(roadmap_stage.get("title") or ts.get("roadmap_child_stage_title") or "").lower()
+        stage_description = str(roadmap_stage.get("description") or ts.get("roadmap_child_stage_description") or "").lower()
+        required_evidence = roadmap_stage.get("required_evidence") or ts.get("roadmap_required_evidence") or []
+        if isinstance(required_evidence, str):
+            required_evidence = [required_evidence]
+        required_evidence_text = " ".join(str(item) for item in required_evidence).lower()
+
+        # stage-aware repository-grounded investigation. This is intentionally specific
+        # to the roadmap stage semantics and only resolves against files already present
+        # in repository_context.file_list.
+        stage_hints = stage_title + " " + stage_description + " " + required_evidence_text
+        if stage_id == "7.1" or any(token in stage_hints for token in ["historical data", "canonical schema", "replay", "normalized", "timestamp", "field validation"]):
+            for f in [
+                "market_data.py",
+                "market_data_engine.py",
+                "bitvavo_trade_collector.py",
+                "replay_runner.py",
+            ]:
+                add_if_present(f)
+
         # direct hint
         if isinstance(ts.get("target_paths"), list):
             for p in ts.get("target_paths"):
-                if p in file_list:
-                    targets.append(p)
-                else:
-                    # accept if appears as basename
-                    base = os.path.basename(p)
-                    if base in file_list:
-                        targets.append(base)
+                add_if_present(p)
 
         # change_area semantic hints
         if not targets and ts.get("change_area"):
             area = ts.get("change_area")
-            # map known areas
             mapping = {
                 "risk": ["risk_engine.py"],
                 "execution": ["execution_engine.py"],
@@ -105,8 +132,7 @@ class ArchitectExecutor(AgentExecutor):
             }
             if area in mapping:
                 for f in mapping[area]:
-                    if f in file_list:
-                        targets.append(f)
+                    add_if_present(f)
 
         # fallback: attempt to match keywords in filenames
         if not targets and ts.get("keywords"):
@@ -142,10 +168,19 @@ class ArchitectExecutor(AgentExecutor):
         adr_required, safety_implications = self._assess_safety_and_adr(affected)
 
         # build outputs
+        stage_context = {
+            "roadmap_stage_id": ts.get("roadmap_stage_id") or ts.get("roadmap_child_stage_id") or None,
+            "roadmap_child_stage_title": ts.get("roadmap_child_stage_title") or (ts.get("roadmap_stage") or {}).get("title"),
+            "roadmap_child_stage_description": ts.get("roadmap_child_stage_description") or (ts.get("roadmap_stage") or {}).get("description"),
+            "required_evidence": ts.get("roadmap_required_evidence") or ((ts.get("roadmap_stage") or {}).get("required_evidence") or []),
+            "exit_criteria": ts.get("roadmap_exit_criteria") or ((ts.get("roadmap_stage") or {}).get("exit_criteria") or []),
+            "owner": (ts.get("roadmap_stage") or {}).get("owner") or ts.get("owner") or (repo_ctx.get("owners") or {}).get("suggested") or None,
+        }
         assessment = {
             "summary": f"Architect analysis for task {req.task_id}",
             "repository_revision": req.repository_revision,
             "files_scanned": len(repo_ctx.get("file_list", [])),
+            "roadmap_stage": stage_context,
         }
 
         proposed_changes = []
@@ -185,6 +220,8 @@ class ArchitectExecutor(AgentExecutor):
 
         assumptions = []
         open_questions = []
+        if not affected and (ts.get("roadmap_stage_id") or ts.get("roadmap_child_stage_id") or ts.get("roadmap_child_stage_title") or ts.get("roadmap_stage")):
+            open_questions.append("Roadmap stage context was provided, but no existing repository component matched the stage evidence. Which component should be treated as the authoritative historical-data/replay owner?")
         if not repo_ctx.get("owners"):
             open_questions.append("Who owns the affected components (suggested owner missing) ?")
 
