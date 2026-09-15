@@ -155,6 +155,59 @@ class ArchitectExecutor(AgentExecutor):
                 safety_flags.append({"file": f, "reason": "safety-sensitive component"})
         return adr_needed, safety_flags
 
+    def _build_adr_artifact(self, req: InvocationRequest, ts: Dict[str, Any], affected: List[str], stage_context: Dict[str, Any]) -> Dict[str, Any]:
+        task_title = str(ts.get("title") or req.task_id or "architecture-task")
+        stage_id = str(ts.get("roadmap_stage_id") or ts.get("roadmap_child_stage_id") or stage_context.get("roadmap_stage_id") or "unknown")
+        stage_title = str(stage_context.get("roadmap_child_stage_title") or ts.get("roadmap_child_stage_title") or "Architecture decision")
+        decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{req.task_id}:{req.run_id or 'unknown'}:adr"))
+        adr_content = {
+            "adr_id": decision_id,
+            "title": f"ADR {stage_id}: {stage_title}",
+            "task_id": req.task_id,
+            "run_id": req.run_id or str(uuid.uuid4()),
+            "repository_revision": req.repository_revision,
+            "status": "PROPOSED",
+            "context": {
+                "task_title": task_title,
+                "stage_id": stage_id,
+                "stage_title": stage_title,
+                "affected_components": affected,
+                "repository_context": ts.get("repository_context", {}),
+            },
+            "decision": {
+                "summary": "The architecture decision for this stage is documented in the associated architecture result and ADR artifact.",
+                "owner": stage_context.get("owner") or ts.get("owner") or "architect",
+                "decision_type": "architecture_change",
+            },
+            "consequences": {
+                "positive": ["Clear architectural boundary and evidence for execution.", "Improves traceability and reviewability."],
+                "negative": ["Requires explicit ADR validation before proceeding to implementation."],
+            },
+            "alternatives_considered": [
+                "Proceed without a formal ADR and rely on informal design notes.",
+                "Treat the change as a simple implementation-only task without architecture review.",
+            ],
+            "references": {
+                "task_spec": {
+                    "roadmap_stage_id": ts.get("roadmap_stage_id"),
+                    "roadmap_child_stage_id": ts.get("roadmap_child_stage_id"),
+                    "required_evidence": ts.get("roadmap_required_evidence") or stage_context.get("required_evidence") or [],
+                    "exit_criteria": ts.get("roadmap_exit_criteria") or stage_context.get("exit_criteria") or [],
+                }
+            },
+        }
+        return {
+            "artifact_id": decision_id,
+            "artifact_type": "adr",
+            "task_id": req.task_id,
+            "run_id": req.run_id or str(uuid.uuid4()),
+            "repository_revision": req.repository_revision,
+            "producer": "architect",
+            "created_at": self._now(),
+            "path": f".agent/adr/{decision_id}.md",
+            "content": adr_content,
+        }
+
     def execute(self, req: InvocationRequest) -> AgentResult:
         self.exec_count += 1
         # validate required inputs per contract
@@ -225,6 +278,34 @@ class ArchitectExecutor(AgentExecutor):
         if not repo_ctx.get("owners"):
             open_questions.append("Who owns the affected components (suggested owner missing) ?")
 
+        adr_artifact = None
+        adr_reference = None
+        try:
+            simulate_adr_persistence_failure = req.task_spec.get("simulate_adr_persistence_failure") if isinstance(req.task_spec, dict) else False
+        except Exception:
+            simulate_adr_persistence_failure = False
+
+        if adr_required:
+            try:
+                adr_artifact = self._build_adr_artifact(req, ts, affected, stage_context)
+                if simulate_adr_persistence_failure:
+                    raise RuntimeError("simulated ADR persistence failure")
+                adr_reference = adr_artifact["artifact_id"]
+            except Exception as exc:
+                return AgentResult(
+                    task_id=req.task_id,
+                    agent_role="ARCHITECT",
+                    run_id=req.run_id or str(uuid.uuid4()),
+                    status="FAILED",
+                    started_at=self._now(),
+                    completed_at=self._now(),
+                    changed_files=[],
+                    output_artifacts=[],
+                    proposed_next_state=None,
+                    error={"type": exc.__class__.__name__, "message": f"ADR creation/persistence failed: {exc}", "trace": ""},
+                    execution_metadata={"repository_revision": req.repository_revision},
+                )
+
         arch_result = ArchitectureResult(
             task_id=req.task_id,
             run_id=req.run_id,
@@ -241,7 +322,7 @@ class ArchitectExecutor(AgentExecutor):
             acceptance_criteria=acceptance_criteria,
             developer_specification=developer_spec,
             adr_required=adr_required,
-            adr_reference=None,
+            adr_reference=adr_reference,
             assumptions=assumptions,
             open_questions=open_questions,
             escalation={"requires_human_review": adr_required or bool(safety_implications)} if (adr_required or safety_implications) else None,
@@ -267,6 +348,11 @@ class ArchitectExecutor(AgentExecutor):
         }
         if simulate_malformed:
             artifact.pop("content", None)
+
+        output_artifacts = [artifact]
+        if adr_artifact is not None:
+            output_artifacts.append(adr_artifact)
+
         result = AgentResult(
             task_id=req.task_id,
             agent_role="ARCHITECT",
@@ -275,7 +361,7 @@ class ArchitectExecutor(AgentExecutor):
             started_at=now,
             completed_at=now,
             changed_files=[],
-            output_artifacts=[artifact],
+            output_artifacts=output_artifacts,
             proposed_next_state=None,
             error=None,
             execution_metadata={"repository_revision": req.repository_revision},

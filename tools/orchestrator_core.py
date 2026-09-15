@@ -1651,8 +1651,17 @@ class Orchestrator:
                     self.store.append_transition(task_id, "BLOCKED", actor, note="id_mismatch")
                     return {"status": "blocked", "reason": "id_mismatch"}
 
-                # persist architecture_result artifact into task
-                self.store.append_artifact(task_id, art)
+                # persist all architect-produced artifacts into task, including ADRs
+                for out_art in result.output_artifacts or []:
+                    if not isinstance(out_art, dict):
+                        continue
+                    artifact_id = out_art.get("artifact_id")
+                    if not artifact_id:
+                        continue
+                    existing = self.store.read_task(task_id).get("artifacts", [])
+                    if any(existing_art.get("artifact_id") == artifact_id for existing_art in existing):
+                        continue
+                    self.store.append_artifact(task_id, out_art)
 
                 # ADR predicate handling
                 adr_required = bool(content.get("adr_required"))

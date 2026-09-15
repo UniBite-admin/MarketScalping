@@ -69,6 +69,24 @@ class ArchitectAgentTests(unittest.TestCase):
         self.assertTrue(art.get("adr_required"))
         self.assertTrue(len(art.get("safety_implications", [])) > 0)
 
+    def test_adr_required_produces_persisted_adr_artifact(self):
+        ts = self._base_task_spec()
+        ts["target_paths"] = ["risk_engine.py"]
+        req = self._make_request(task_spec=ts)
+        res = self.runtime.invoke(req)
+        self.assertEqual(res.status, "SUCCEEDED")
+
+        arch_art = next((a for a in res.output_artifacts if a.get("artifact_type") == "architecture_result"), None)
+        self.assertIsNotNone(arch_art)
+        arch_content = arch_art.get("content") or {}
+        self.assertTrue(arch_content.get("adr_required"))
+        self.assertIsNotNone(arch_content.get("adr_reference"))
+
+        adr_art = next((a for a in res.output_artifacts if a.get("artifact_type") == "adr"), None)
+        self.assertIsNotNone(adr_art)
+        self.assertEqual(arch_content.get("adr_reference"), adr_art.get("artifact_id"))
+        self.assertIn("decision", adr_art.get("content", {}))
+
     def test_safety_sensitive_task_flagged(self):
         ts = self._base_task_spec()
         ts["target_paths"] = ["execution_engine.py"]

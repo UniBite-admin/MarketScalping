@@ -28,9 +28,10 @@ class ArchitectOrchestratorIntegrationTests(unittest.TestCase):
         self.assertEqual(task.get("status"), "READY")
 
     def test_adr_required_missing_blocks(self):
-        # include the sensitive file in the repository context so Architect detects it
+        # simulate the failure case: Architect detects ADR is required but cannot persist it
         spec = self._base_task_spec(files=["risk_engine.py", "market_data.py", "market_data_engine.py"]) 
         spec["target_paths"] = ["risk_engine.py"]
+        spec["simulate_adr_persistence_failure"] = True
         t = self.orch.create_task("arch-adr-missing", created_by="tester", repository_revision="r2", task_spec=spec)
         self.orch.transition_task(t["task_id"], "TRIAGE", actor="orchestrator")
         tid = t["task_id"]
@@ -38,6 +39,19 @@ class ArchitectOrchestratorIntegrationTests(unittest.TestCase):
         self.assertIn(res.get("status"), ("blocked",))
         task = self.orch.store.read_task(tid)
         self.assertEqual(task.get("status"), "BLOCKED")
+
+    def test_architect_generated_adr_allows_architecture_transition(self):
+        spec = self._base_task_spec(files=["risk_engine.py", "market_data.py", "market_data_engine.py"])
+        spec["target_paths"] = ["risk_engine.py"]
+        t = self.orch.create_task("arch-adr-generated", created_by="tester", repository_revision="r2a", task_spec=spec)
+        self.orch.transition_task(t["task_id"], "TRIAGE", actor="orchestrator")
+        tid = t["task_id"]
+        res = self.orch.transition_task(tid, "ARCHITECTURE", actor="orchestrator")
+        self.assertEqual(res.get("status"), "ok")
+        task = self.orch.store.read_task(tid)
+        self.assertEqual(task.get("status"), "READY")
+        adr_artifacts = [a for a in task.get("artifacts", []) if a.get("artifact_type") == "adr"]
+        self.assertEqual(len(adr_artifacts), 1)
 
     def test_malformed_artifact_blocks(self):
         spec = self._base_task_spec()
