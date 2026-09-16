@@ -65,6 +65,8 @@ class TradeCollectionResult:
     collection_status: str = "success"
     window_complete: bool = True
     integrity_issues: tuple[str, ...] = ()
+    dataset_status: str = "VALIDATED"
+    validation_result: str = "SUCCESS"
 
 
 class BitvavoTradeCollectorError(RuntimeError):
@@ -177,6 +179,16 @@ class BitvavoTradeCollector:
         if resolved_output_path is not None:
             self._write_jsonl(resolved_output_path, accepted_records)
 
+        if len(raw_rows) == 0:
+            dataset_status = "EMPTY_VALID_DATASET"
+            validation_result = "SUCCESS"
+        elif collection_status in {"rejected", "blocked"} or bool(integrity_issues) or len(accepted_records) == 0:
+            dataset_status = "REJECTED"
+            validation_result = "REJECTED"
+        else:
+            dataset_status = "VALIDATED"
+            validation_result = "SUCCESS"
+
         return TradeCollectionResult(
             market=market,
             start_timestamp_ms=start_timestamp_ms,
@@ -192,6 +204,8 @@ class BitvavoTradeCollector:
             collection_status=collection_status,
             window_complete=window_complete,
             integrity_issues=tuple(integrity_issues),
+            dataset_status=dataset_status,
+            validation_result=validation_result,
         )
 
     def _fetch_trades(self, market: str, start_timestamp_ms: int, end_timestamp_ms: int, limit: int) -> Any:

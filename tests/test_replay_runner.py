@@ -119,6 +119,25 @@ class ReplayRunnerTests(unittest.TestCase):
 
         self.assertEqual(first, second)
 
+    def test_canonical_dataset_state_and_replay_eligibility_are_explicit(self):
+        runner = ReplayRunner(position_max_hold_events=2)
+        success = runner.replay(self._fixture_events())
+        self.assertEqual(success.dataset_status, "CANONICALIZED")
+        self.assertEqual(success.canonicalization_result, "SUCCESS")
+
+        rejected = runner.replay([
+            {
+                "event_time_utc": "2025-01-01T12:00:00Z",
+                "event_type": "ticker",
+                "market": "BTC-EUR",
+                "bid": 95000.0,
+                "ask": 95001.0,
+                "last": 0.0,
+            }
+        ])
+        self.assertEqual(rejected.dataset_status, "REJECTED")
+        self.assertEqual(rejected.canonicalization_result, "REJECTED")
+
     def test_invalid_timestamp_is_rejected_without_wall_clock_fallback(self):
         runner = ReplayRunner(position_max_hold_events=2)
         result = runner.replay(

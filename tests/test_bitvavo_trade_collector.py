@@ -212,6 +212,31 @@ class BitvavoTradeCollectorTests(unittest.TestCase):
         self.assertEqual(result.accepted, 0)
         self.assertEqual(result.fetched, 0)
 
+    def test_dataset_state_is_explicit_for_valid_empty_and_rejected_outputs(self):
+        valid_collector = BitvavoTradeCollector(fetcher=lambda request: DummyResponse([{
+            "trade_id": "trade-1",
+            "timestamp": 1735732800000,
+            "amount": "0.25",
+            "price": "95000.5",
+            "side": "buy",
+        }]), default_output_dir=self.tmp_path / "raw")
+        valid_result = valid_collector.collect_window("BTC-EUR", 1735732800000, 1735732860000, output_path=self.tmp_path / "valid.jsonl")
+        self.assertEqual(valid_result.dataset_status, "VALIDATED")
+
+        empty_collector = BitvavoTradeCollector(fetcher=lambda request: DummyResponse([]), default_output_dir=self.tmp_path / "raw")
+        empty_result = empty_collector.collect_window("BTC-EUR", 1735732800000, 1735732860000, output_path=self.tmp_path / "empty.jsonl")
+        self.assertEqual(empty_result.dataset_status, "EMPTY_VALID_DATASET")
+
+        invalid_collector = BitvavoTradeCollector(fetcher=lambda request: DummyResponse([{
+            "trade_id": "trade-1",
+            "timestamp": 1735732800000,
+            "amount": "invalid",
+            "price": "95000.5",
+            "side": "buy",
+        }]), default_output_dir=self.tmp_path / "raw")
+        invalid_result = invalid_collector.collect_window("BTC-EUR", 1735732800000, 1735732860000, output_path=self.tmp_path / "invalid.jsonl")
+        self.assertEqual(invalid_result.dataset_status, "REJECTED")
+
     def test_out_of_window_timestamp_is_blocked(self):
         collector = BitvavoTradeCollector(fetcher=lambda request: DummyResponse([{
             "trade_id": "trade-1",

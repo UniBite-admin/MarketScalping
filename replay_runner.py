@@ -40,6 +40,8 @@ class ReplayResult:
     position_timestamps: tuple[str, ...]
     account_timestamps: tuple[str, ...]
     trade_timestamps: tuple[str, ...]
+    dataset_status: str = "REJECTED"
+    canonicalization_result: str = "REJECTED"
 
 
 @dataclass(frozen=True)
@@ -256,6 +258,16 @@ def _build_replay_result(
 
     final_account = account_rows[-1] if account_rows else {}
 
+    if events_total == 0:
+        dataset_status = "EMPTY_VALID_DATASET"
+        canonicalization_result = "NOT_APPLICABLE"
+    elif events_processed == 0:
+        dataset_status = "REJECTED"
+        canonicalization_result = "REJECTED"
+    else:
+        dataset_status = "CANONICALIZED"
+        canonicalization_result = "SUCCESS"
+
     return ReplayResult(
         events_total=events_total,
         events_processed=events_processed,
@@ -276,6 +288,8 @@ def _build_replay_result(
         position_timestamps=tuple(_csv_column(position_rows, "timestamp_utc")),
         account_timestamps=tuple(_csv_column(account_rows, "timestamp_utc")),
         trade_timestamps=tuple(_csv_column(trade_rows, "timestamp_utc")),
+        dataset_status=dataset_status,
+        canonicalization_result=canonicalization_result,
     )
 
 
