@@ -40,6 +40,120 @@ class TradeRecord:
 
 
 @dataclass
+class CostAttribution:
+    spread_cost: float
+    slippage_cost: float
+    fee_cost: float
+    total_execution_cost: float
+    gross_pnl: float
+    net_pnl: float
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "spread_cost": self.spread_cost,
+            "slippage_cost": self.slippage_cost,
+            "fee_cost": self.fee_cost,
+            "total_execution_cost": self.total_execution_cost,
+            "gross_pnl": self.gross_pnl,
+            "net_pnl": self.net_pnl,
+            "identity": "gross_pnl - execution_costs = net_pnl",
+        }
+
+
+@dataclass
+class PerformanceSummary:
+    gross_pnl: float
+    execution_costs: float
+    net_pnl: float
+    roi: float | None
+    trade_count: int
+    winning_trades: int
+    losing_trades: int
+    win_rate: float
+    average_win: float
+    average_loss: float
+    expectancy: float
+    profit_factor: float
+    max_drawdown: float
+    current_drawdown: float
+    current_drawdown_pct: float
+    consecutive_losses: int
+    average_holding_time_seconds: float
+    sharpe: float | None = None
+    sortino: float | None = None
+    unsupported_metrics: list[str] = field(default_factory=lambda: ["sharpe", "sortino"])
+    equity_definition: str = "accounting_engine.equity as the authoritative backtest equity signal; no separate fabricated unrealized-PnL layer"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "gross_pnl": self.gross_pnl,
+            "execution_costs": self.execution_costs,
+            "net_pnl": self.net_pnl,
+            "roi": self.roi,
+            "trade_count": self.trade_count,
+            "winning_trades": self.winning_trades,
+            "losing_trades": self.losing_trades,
+            "win_rate": self.win_rate,
+            "average_win": self.average_win,
+            "average_loss": self.average_loss,
+            "expectancy": self.expectancy,
+            "profit_factor": self.profit_factor,
+            "max_drawdown": self.max_drawdown,
+            "current_drawdown": self.current_drawdown,
+            "current_drawdown_pct": self.current_drawdown_pct,
+            "consecutive_losses": self.consecutive_losses,
+            "average_holding_time_seconds": self.average_holding_time_seconds,
+            "sharpe": self.sharpe,
+            "sortino": self.sortino,
+            "unsupported_metrics": self.unsupported_metrics,
+            "equity_definition": self.equity_definition,
+        }
+
+
+@dataclass
+class RunMetadata:
+    dataset_id: str
+    event_count: int
+    first_event_time_utc: str | None
+    last_event_time_utc: str | None
+    strategy_configuration: dict[str, Any]
+    risk_configuration: dict[str, Any]
+    execution_configuration: dict[str, Any]
+    fee_configuration: dict[str, Any]
+    spread_configuration: dict[str, Any]
+    slippage_configuration: dict[str, Any]
+    latency_configuration: dict[str, Any]
+    run_signature: str
+    schema_version: str = "step_8_4_analytics_v1"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "dataset_id": self.dataset_id,
+            "event_count": self.event_count,
+            "first_event_time_utc": self.first_event_time_utc,
+            "last_event_time_utc": self.last_event_time_utc,
+            "strategy_configuration": self.strategy_configuration,
+            "risk_configuration": self.risk_configuration,
+            "execution_configuration": self.execution_configuration,
+            "fee_configuration": self.fee_configuration,
+            "spread_configuration": self.spread_configuration,
+            "slippage_configuration": self.slippage_configuration,
+            "latency_configuration": self.latency_configuration,
+            "run_signature": self.run_signature,
+            "schema_version": self.schema_version,
+        }
+
+
+@dataclass
+class BacktestAnalytics:
+    trade_ledger: list[dict[str, Any]]
+    equity_curve: list[dict[str, Any]]
+    cost_attribution: CostAttribution
+    performance_summary: PerformanceSummary
+    run_metadata: RunMetadata
+
+
+@dataclass
 class BacktestResult:
     run_id: str
     dataset_id: str
@@ -75,6 +189,7 @@ class BacktestResult:
     execution_events: list[dict[str, Any]] = field(default_factory=list)
     accounting_decisions: list[dict[str, Any]] = field(default_factory=list)
     position_events: list[dict[str, Any]] = field(default_factory=list)
+    analytics: BacktestAnalytics | None = None
 
 
 @dataclass
@@ -415,9 +530,140 @@ class BacktestEngine:
             ).encode("utf-8")
         ).hexdigest()
 
+        trade_ledger = [
+            {
+                "trade_id": entry.get("trade_id", f"trade-{idx + 1}"),
+                "market": self.config.market,
+                "side": entry.get("side", "UNKNOWN"),
+                "entry_timestamp_utc": entry.get("open_time_utc"),
+                "exit_timestamp_utc": entry.get("close_time_utc"),
+                "entry_price": entry.get("entry_price", 0.0),
+                "exit_price": entry.get("exit_price", 0.0),
+                "quantity": entry.get("quantity", 0.0),
+                "gross_pnl": entry.get("gross_pnl", 0.0),
+                "spread_impact": entry.get("spread_impact", 0.0),
+                "slippage_impact": entry.get("slippage_impact", entry.get("slippage", 0.0)),
+                "fees": entry.get("fees", 0.0),
+                "net_pnl": entry.get("net_pnl", 0.0),
+                "holding_time_seconds": entry.get("holding_time_seconds", 0.0),
+                "status": entry.get("status", "CLOSED"),
+                "execution_status": entry.get("status", "CLOSED"),
+            }
+            for idx, entry in enumerate(state.closed_trades)
+        ]
+
+        equity_curve = [
+            {
+                "timestamp_utc": point["timestamp_utc"],
+                "equity": float(point["equity"]),
+                "cash": float(point["cash"]),
+                "position_quantity": float(point["position_quantity"]),
+                "realized_pnl": float(point["realized_pnl"]),
+                "peak_equity": float(point["peak_equity"]),
+                "max_drawdown": float(point["max_drawdown"]),
+            }
+            for point in state.snapshots
+        ]
+
+        realized_pnl = float(state.realized_pnl)
+        gross_pnl = sum(float(trade["gross_pnl"]) for trade in trade_ledger)
+        execution_costs = sum(float(trade["fees"]) + float(trade["slippage_impact"]) + float(trade["spread_impact"]) for trade in trade_ledger)
+        net_pnl = realized_pnl if realized_pnl != 0 else sum(float(trade["net_pnl"]) for trade in trade_ledger)
+        total_execution_cost = execution_costs
+        max_drawdown = max(float(point["max_drawdown"]) for point in equity_curve) if equity_curve else 0.0
+        current_drawdown = max(0.0, (max(float(point["peak_equity"]) for point in equity_curve) - float(equity_curve[-1]["equity"])) / max(float(point["peak_equity"]) for point in equity_curve) if equity_curve else 0.0)
+        if equity_curve:
+            current_peak = max(float(point["peak_equity"]) for point in equity_curve)
+            current_equity = float(equity_curve[-1]["equity"])
+            current_drawdown = max(0.0, (current_peak - current_equity) / max(current_peak, 1e-9))
+        else:
+            current_drawdown = 0.0
+        current_drawdown_pct = current_drawdown
+
+        cost_attribution = CostAttribution(
+            spread_cost=sum(float(trade["spread_impact"]) for trade in trade_ledger),
+            slippage_cost=sum(float(trade["slippage_impact"]) for trade in trade_ledger),
+            fee_cost=sum(float(trade["fees"]) for trade in trade_ledger),
+            total_execution_cost=total_execution_cost,
+            gross_pnl=gross_pnl,
+            net_pnl=net_pnl,
+        )
+
+        trade_count = len(trade_ledger)
+        winning_trades = sum(1 for trade in trade_ledger if float(trade["net_pnl"]) > 0)
+        losing_trades = sum(1 for trade in trade_ledger if float(trade["net_pnl"]) < 0)
+        win_rate = (winning_trades / trade_count) if trade_count else 0.0
+        average_win = (sum(float(trade["net_pnl"]) for trade in trade_ledger if float(trade["net_pnl"]) > 0) / winning_trades) if winning_trades else 0.0
+        average_loss = (abs(sum(float(trade["net_pnl"]) for trade in trade_ledger if float(trade["net_pnl"]) < 0)) / losing_trades) if losing_trades else 0.0
+        expectancy = (win_rate * average_win) - ((1.0 - win_rate) * average_loss)
+        gross_profit = sum(float(trade["net_pnl"]) for trade in trade_ledger if float(trade["net_pnl"]) > 0)
+        gross_loss = abs(sum(float(trade["net_pnl"]) for trade in trade_ledger if float(trade["net_pnl"]) < 0))
+        profit_factor = (gross_profit / gross_loss) if gross_loss else (float("inf") if gross_profit > 0 else 0.0)
+        roi = (net_pnl / max(self.config.initial_capital, 1e-9)) if self.config.initial_capital else 0.0
+        average_holding_time = (sum(float(trade["holding_time_seconds"]) for trade in trade_ledger) / trade_count) if trade_count else 0.0
+        consecutive_losses = 0
+        current_streak = 0
+        for trade in trade_ledger:
+            pnl = float(trade["net_pnl"])
+            if pnl < 0:
+                current_streak += 1
+                consecutive_losses = max(consecutive_losses, current_streak)
+            else:
+                current_streak = 0
+
+        performance_summary = PerformanceSummary(
+            gross_pnl=gross_pnl,
+            execution_costs=execution_costs,
+            net_pnl=net_pnl,
+            roi=roi,
+            trade_count=trade_count,
+            winning_trades=winning_trades,
+            losing_trades=losing_trades,
+            win_rate=win_rate,
+            average_win=average_win,
+            average_loss=average_loss,
+            expectancy=expectancy,
+            profit_factor=profit_factor,
+            max_drawdown=max_drawdown,
+            current_drawdown=current_drawdown,
+            current_drawdown_pct=current_drawdown_pct,
+            consecutive_losses=consecutive_losses,
+            average_holding_time_seconds=average_holding_time,
+            sharpe=None,
+            sortino=None,
+            unsupported_metrics=["sharpe", "sortino"],
+        )
+
+        run_metadata = RunMetadata(
+            dataset_id=hashlib.sha256(json.dumps({"events": [event["raw"] for event in normalized]}, sort_keys=True).encode("utf-8")).hexdigest(),
+            event_count=len(normalized),
+            first_event_time_utc=observed["first_event_time_utc"],
+            last_event_time_utc=observed["last_event_time_utc"],
+            strategy_configuration=strategy_configuration or {},
+            risk_configuration=risk_configuration or {},
+            execution_configuration={
+                "latency_ticks": self.config.latency_ticks,
+                "partial_fill_ratio": self.config.partial_fill_ratio,
+                "max_position_fraction": self.config.max_position_fraction,
+            },
+            fee_configuration={"fee_rate": self.config.fee_rate},
+            spread_configuration={"spread_pct": self.config.spread_pct},
+            slippage_configuration={"slippage_bps": self.config.slippage_bps},
+            latency_configuration={"latency_ticks": self.config.latency_ticks},
+            run_signature=run_signature,
+        )
+
+        analytics = BacktestAnalytics(
+            trade_ledger=trade_ledger,
+            equity_curve=equity_curve,
+            cost_attribution=cost_attribution,
+            performance_summary=performance_summary,
+            run_metadata=run_metadata,
+        )
+
         result = BacktestResult(
             run_id=run_signature,
-            dataset_id=hashlib.sha256(json.dumps({"events": [event["raw"] for event in normalized]}, sort_keys=True).encode("utf-8")).hexdigest(),
+            dataset_id=run_metadata.dataset_id,
             market=self.config.market,
             event_start_utc=observed["first_event_time_utc"],
             event_end_utc=observed["last_event_time_utc"],
@@ -453,6 +699,7 @@ class BacktestEngine:
             execution_events=execution_events,
             accounting_decisions=accounting_decisions,
             position_events=position_events,
+            analytics=analytics,
         )
         return result
 

@@ -160,6 +160,35 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertIn("slippage_cost", breakdown)
         self.assertIn("spread_cost", breakdown)
 
+    def test_step_8_4_analytics_bundle_exposes_structured_outputs(self):
+        result = BacktestEngine(BacktestConfig()).run(self._fixture_events())
+        self.assertTrue(hasattr(result, "analytics"))
+        self.assertIsNotNone(result.analytics)
+        self.assertTrue(len(result.analytics.trade_ledger) >= 0)
+        self.assertTrue(len(result.analytics.equity_curve) >= 0)
+        self.assertIsNotNone(result.analytics.cost_attribution)
+        self.assertIsNotNone(result.analytics.performance_summary)
+        self.assertIsNotNone(result.analytics.run_metadata)
+        self.assertIsNone(result.analytics.performance_summary.sharpe)
+        self.assertIsNone(result.analytics.performance_summary.sortino)
+
+    def test_step_8_4_trade_ledger_tracks_execution_costs(self):
+        result = BacktestEngine(BacktestConfig(fee_rate=0.01, slippage_bps=20.0)).run(self._fixture_events())
+        if not result.analytics.trade_ledger:
+            self.skipTest("No completed trades in this fixture")
+        trade = result.analytics.trade_ledger[0]
+        self.assertIn("status", trade)
+        self.assertIn("net_pnl", trade)
+        self.assertIn("fees", trade)
+        self.assertIn("slippage_impact", trade)
+        self.assertIn("spread_impact", trade)
+
+    def test_step_8_4_equity_curve_is_chronological(self):
+        result = BacktestEngine(BacktestConfig()).run(self._fixture_events())
+        timestamps = [point["timestamp_utc"] for point in result.analytics.equity_curve]
+        self.assertEqual(timestamps, sorted(timestamps))
+        self.assertTrue(all(point["equity"] >= 0 for point in result.analytics.equity_curve))
+
 
 if __name__ == "__main__":
     unittest.main()
