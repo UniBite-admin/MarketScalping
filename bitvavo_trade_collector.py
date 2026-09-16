@@ -62,6 +62,9 @@ class TradeCollectionResult:
     rejection_reasons: tuple[tuple[str, int], ...]
     output_path: str | None
     records: tuple[BitvavoHistoricalTrade, ...]
+    collection_status: str = "success"
+    window_complete: bool = True
+    integrity_issues: tuple[str, ...] = ()
 
 
 class BitvavoTradeCollectorError(RuntimeError):
@@ -136,6 +139,35 @@ class BitvavoTradeCollector:
 
         accepted_records.sort(key=lambda record: (record.event_time_utc, record.trade_id))
 
+        integrity_issues: list[str] = []
+        collection_status = "success"
+        window_complete = True
+
+        if rejection_reasons:
+            collection_status = "rejected"
+            window_complete = False
+            integrity_issues.append("invalid_rows_present")
+
+        if accepted_records:
+            timestamps = [record.raw_timestamp_ms for record in accepted_records if record.raw_timestamp_ms is not None]
+            if timestamps:
+                min_ts = min(timestamps)
+                max_ts = max(timestamps)
+                if min_ts < start_timestamp_ms or max_ts > end_timestamp_ms:
+                    integrity_issues.append("timestamp_outside_requested_window")
+                    collection_status = "blocked"
+                    window_complete = False
+
+        if raw_rows and not accepted_records and not rejection_reasons:
+            collection_status = "blocked"
+            window_complete = False
+            integrity_issues.append("empty_accepted_window")
+
+        if not raw_rows:
+            collection_status = "success"
+            window_complete = True
+            integrity_issues = []
+
         resolved_output_path = self._resolve_output_path(
             market=market,
             start_timestamp_ms=start_timestamp_ms,
@@ -157,6 +189,9 @@ class BitvavoTradeCollector:
             rejection_reasons=tuple(sorted(rejection_reasons.items())),
             output_path=str(resolved_output_path) if resolved_output_path is not None else None,
             records=tuple(accepted_records),
+            collection_status=collection_status,
+            window_complete=window_complete,
+            integrity_issues=tuple(integrity_issues),
         )
 
     def _fetch_trades(self, market: str, start_timestamp_ms: int, end_timestamp_ms: int, limit: int) -> Any:

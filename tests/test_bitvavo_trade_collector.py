@@ -188,6 +188,44 @@ class BitvavoTradeCollectorTests(unittest.TestCase):
         self.assertEqual(result.accepted, 1)
         self.assertEqual(result.duplicated, 1)
 
+    def test_invalid_window_is_explicitly_rejected(self):
+        collector = BitvavoTradeCollector(fetcher=lambda request: DummyResponse([{
+            "trade_id": "trade-1",
+            "timestamp": 1735732800000,
+            "amount": "invalid",
+            "price": "95000.5",
+            "side": "buy",
+        }]), default_output_dir=self.tmp_path / "raw")
+
+        result = collector.collect_window("BTC-EUR", 1735732800000, 1735732860000, output_path=self.tmp_path / "out.jsonl")
+        self.assertEqual(result.collection_status, "rejected")
+        self.assertFalse(result.window_complete)
+        self.assertEqual(result.accepted, 0)
+        self.assertIn("invalid_rows_present", result.integrity_issues)
+
+    def test_empty_window_is_valid_and_successful(self):
+        collector = BitvavoTradeCollector(fetcher=lambda request: DummyResponse([]), default_output_dir=self.tmp_path / "raw")
+
+        result = collector.collect_window("BTC-EUR", 1735732800000, 1735732860000, output_path=self.tmp_path / "out.jsonl")
+        self.assertEqual(result.collection_status, "success")
+        self.assertTrue(result.window_complete)
+        self.assertEqual(result.accepted, 0)
+        self.assertEqual(result.fetched, 0)
+
+    def test_out_of_window_timestamp_is_blocked(self):
+        collector = BitvavoTradeCollector(fetcher=lambda request: DummyResponse([{
+            "trade_id": "trade-1",
+            "timestamp": 1735732800000,
+            "amount": "0.25",
+            "price": "95000.5",
+            "side": "buy",
+        }]), default_output_dir=self.tmp_path / "raw")
+
+        result = collector.collect_window("BTC-EUR", 1735732801000, 1735732860000, output_path=self.tmp_path / "out.jsonl")
+        self.assertEqual(result.collection_status, "blocked")
+        self.assertFalse(result.window_complete)
+        self.assertIn("timestamp_outside_requested_window", result.integrity_issues)
+
     def test_chronological_sorting(self):
         collector = BitvavoTradeCollector(fetcher=lambda request: DummyResponse([
             {
