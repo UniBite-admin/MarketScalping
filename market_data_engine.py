@@ -344,7 +344,29 @@ class MarketDataEngine:
         return True
 
     def _can_process_market_events(self) -> bool:
+        if self.connection_state == "stale_data":
+            self.last_error = "market_event_blocked reason=stale_data"
+            self.logger.warning("market_event_blocked reason=stale_data connection_state=%s", self.connection_state)
+            return False
+
+        if self.connection_state in {"disconnected", "reconnecting", "waiting_to_reconnect", "socket_error", "message_error", "subscription_error", "api_error", "closed", "stopped"}:
+            self.last_error = f"market_event_blocked connection_state={self.connection_state}"
+            self.logger.warning("market_event_blocked connection_state=%s", self.connection_state)
+            return False
+
         if self.recovery_status == "READY":
+            silence_seconds = time.monotonic() - self._last_market_update_monotonic
+            if silence_seconds >= self.stale_after_seconds:
+                self._stale_warning_active = True
+                self.last_error = f"No market update received for {silence_seconds:.1f}s"
+                self.logger.warning(
+                    "market_event_blocked reason=stale_data market=%s silence_seconds=%.2f threshold=%.2f",
+                    self.market,
+                    silence_seconds,
+                    self.stale_after_seconds,
+                )
+                self.set_status("stale_data", f"No BTC-EUR update for {silence_seconds:.1f}s; waiting for new data")
+                return False
             return True
 
         self.last_error = f"market_event_blocked recovery_status={self.recovery_status}"
@@ -747,7 +769,8 @@ class MarketDataEngine:
         self.set_status("connected", "Connected to Bitvavo")
 
         subscription = self.build_subscription()
-        ws.send(json.dumps(subscription))
+        if ws is not None:
+            ws.send(json.dumps(subscription))
 
         self.last_message_summary = self.summarize_message(subscription) if self.debug else "Ticker subscription request sent"
         self.logger.info("subscription_sent payload=%s", self.summarize_message(subscription))
