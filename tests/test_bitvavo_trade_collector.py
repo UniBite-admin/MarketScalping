@@ -120,6 +120,38 @@ class BitvavoTradeCollectorTests(unittest.TestCase):
         self.assertEqual(result.rejected, 1)
         self.assertIn(("non_positive_amount", 1), result.rejection_reasons)
 
+    def test_raw_numeric_contract_rejects_nan_and_infinity(self):
+        invalid_cases = [
+            ({"trade_id": "trade-1", "timestamp": 1735732800000, "amount": "0.25", "price": "nan", "side": "buy"}, "invalid_price"),
+            ({"trade_id": "trade-1", "timestamp": 1735732800000, "amount": "0.25", "price": "inf", "side": "buy"}, "invalid_price"),
+            ({"trade_id": "trade-1", "timestamp": 1735732800000, "amount": "0.25", "price": "-inf", "side": "buy"}, "invalid_price"),
+            ({"trade_id": "trade-1", "timestamp": 1735732800000, "amount": "nan", "price": "95000.5", "side": "buy"}, "invalid_amount"),
+            ({"trade_id": "trade-1", "timestamp": 1735732800000, "amount": "inf", "price": "95000.5", "side": "buy"}, "invalid_amount"),
+            ({"trade_id": "trade-1", "timestamp": 1735732800000, "amount": "-inf", "price": "95000.5", "side": "buy"}, "invalid_amount"),
+        ]
+
+        for row, reason in invalid_cases:
+            with self.subTest(row=row):
+                collector = BitvavoTradeCollector(fetcher=lambda request, row=row: DummyResponse([row]), default_output_dir=self.tmp_path / "raw")
+                result = collector.collect_window("BTC-EUR", 1735732800000, 1735732860000, output_path=self.tmp_path / "out.jsonl")
+                self.assertEqual(result.accepted, 0)
+                self.assertEqual(result.rejected, 1)
+                self.assertIn((reason, 1), result.rejection_reasons)
+
+    def test_raw_zero_and_negative_prices_are_rejected(self):
+        for row in [
+            {"trade_id": "trade-1", "timestamp": 1735732800000, "amount": "0.25", "price": "0", "side": "buy"},
+            {"trade_id": "trade-1", "timestamp": 1735732800000, "amount": "0.25", "price": "-10.0", "side": "buy"},
+            {"trade_id": "trade-1", "timestamp": 1735732800000, "amount": "0", "price": "95000.5", "side": "buy"},
+            {"trade_id": "trade-1", "timestamp": 1735732800000, "amount": "-0.25", "price": "95000.5", "side": "buy"},
+        ]:
+            with self.subTest(row=row):
+                collector = BitvavoTradeCollector(fetcher=lambda request, row=row: DummyResponse([row]), default_output_dir=self.tmp_path / "raw")
+                result = collector.collect_window("BTC-EUR", 1735732800000, 1735732860000, output_path=self.tmp_path / "out.jsonl")
+                self.assertEqual(result.accepted, 0)
+                self.assertEqual(result.rejected, 1)
+                self.assertTrue(any(reason in {"non_positive_price", "non_positive_amount"} for reason, _ in result.rejection_reasons))
+
     def test_invalid_side(self):
         collector = BitvavoTradeCollector(fetcher=lambda request: DummyResponse([{
             "trade_id": "trade-1",

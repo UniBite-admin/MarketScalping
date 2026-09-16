@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import sys
 import threading
@@ -539,11 +540,20 @@ class MarketDataEngine:
 
         try:
             if "bestBid" in data:
-                ticker_state.bid = float(data["bestBid"])
+                bid_value = float(data["bestBid"])
+                if not math.isfinite(bid_value):
+                    raise ValueError("non-finite bid")
+                ticker_state.bid = bid_value
             if "bestAsk" in data:
-                ticker_state.ask = float(data["bestAsk"])
+                ask_value = float(data["bestAsk"])
+                if not math.isfinite(ask_value):
+                    raise ValueError("non-finite ask")
+                ticker_state.ask = ask_value
             if "lastPrice" in data:
-                ticker_state.last = float(data["lastPrice"])
+                last_value = float(data["lastPrice"])
+                if not math.isfinite(last_value):
+                    raise ValueError("non-finite last")
+                ticker_state.last = last_value
         except (TypeError, ValueError) as exc:
             self.last_error = f"Ticker field conversion failed: {exc}"
             self.last_message_summary = self.summarize_message(data)
@@ -607,7 +617,10 @@ class MarketDataEngine:
         ticker_state = self.ensure_ticker_state(str(market))
 
         try:
-            ticker_state.last = float(price)
+            last_value = float(price)
+            if not math.isfinite(last_value):
+                raise ValueError("non-finite trade price")
+            ticker_state.last = last_value
         except (TypeError, ValueError) as exc:
             self.last_error = f"Trade price conversion failed: {exc}"
             self.last_message_summary = self.summarize_message(data)

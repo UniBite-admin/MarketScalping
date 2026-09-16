@@ -312,6 +312,9 @@ class BitvavoTradeCollector:
             value = Decimal(str(raw).strip())
         except (InvalidOperation, AttributeError):
             return None
+
+        if not value.is_finite():
+            return None
         return value
 
     @staticmethod

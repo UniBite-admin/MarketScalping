@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import re
 import tempfile
 from collections import Counter
@@ -309,4 +310,7 @@ def _parse_event_time_utc(raw: object) -> datetime | None:
 def _to_float(raw: object) -> float | None:
     if raw is None or raw == "":
         return None
-    return float(raw)
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError("non-finite number")
+    return value

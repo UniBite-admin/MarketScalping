@@ -178,6 +178,42 @@ class ReplayRunnerTests(unittest.TestCase):
         self.assertEqual(result.events_rejected, 1)
         self.assertIn(("non_positive_bid", 1), result.rejection_reasons)
 
+    def test_replay_rejects_non_finite_numeric_values(self):
+        runner = ReplayRunner(position_max_hold_events=2)
+        invalid_cases = [
+            {"event_time_utc": "2025-01-01T12:00:00Z", "event_type": "ticker", "market": "BTC-EUR", "bid": float("nan"), "ask": 95001.0, "last": 95000.5},
+            {"event_time_utc": "2025-01-01T12:00:00Z", "event_type": "ticker", "market": "BTC-EUR", "bid": 95000.0, "ask": float("inf"), "last": 95000.5},
+            {"event_time_utc": "2025-01-01T12:00:00Z", "event_type": "ticker", "market": "BTC-EUR", "bid": 95000.0, "ask": 95001.0, "last": float("-inf")},
+            {"event_time_utc": "2025-01-01T12:00:00Z", "event_type": "trade", "market": "BTC-EUR", "last": float("nan")},
+            {"event_time_utc": "2025-01-01T12:00:00Z", "event_type": "trade", "market": "BTC-EUR", "last": float("inf")},
+        ]
+
+        for case in invalid_cases:
+            with self.subTest(case=case):
+                result = runner.replay([case])
+                self.assertEqual(result.events_processed, 0)
+                self.assertEqual(result.events_rejected, 1)
+                self.assertTrue(any(reason.startswith("invalid_") or reason in {"non_positive_bid", "non_positive_ask", "non_positive_last", "non_positive_price"} for reason, _ in result.rejection_reasons))
+
+    def test_trade_events_use_synthetic_bid_ask_fallback_without_claiming_real_quotes(self):
+        from replay_runner import _normalize_replay_event
+
+        normalized, rejection = _normalize_replay_event(
+            {
+                "event_time_utc": "2025-01-01T12:00:00Z",
+                "event_type": "trade",
+                "market": "BTC-EUR",
+                "last": 123.45,
+            },
+            0,
+        )
+
+        self.assertEqual(rejection, "")
+        self.assertIsNotNone(normalized)
+        self.assertEqual(normalized.last, 123.45)
+        self.assertEqual(normalized.bid, 123.45)
+        self.assertEqual(normalized.ask, 123.45)
+
     def test_replay_does_not_start_live_websocket_or_runner(self):
         runner = ReplayRunner(position_max_hold_events=2)
         with patch("replay_runner.MarketDataEngine.run") as mock_run, patch(
