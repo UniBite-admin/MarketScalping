@@ -120,6 +120,46 @@ class BacktestEngineTests(unittest.TestCase):
         result = BacktestEngine(BacktestConfig()).run(self._fixture_events())
         self.assertTrue("available_statistical_metrics" in result.metrics or True)
 
+    def test_execution_outcome_tracks_requested_and_remaining_quantity(self):
+        outcome = BacktestEngine(BacktestConfig(partial_fill_ratio=0.5)).execution_model.simulate(
+            side="BUY",
+            reference_price=100.0,
+            order_quantity=2.0,
+            event_time_utc="2025-01-01T12:00:00Z",
+            available_cash=1000.0,
+            position_quantity=0.0,
+            observed_bid=100.0,
+            observed_ask=101.0,
+        )
+        self.assertEqual(outcome.requested_quantity, 2.0)
+        self.assertEqual(outcome.accepted_quantity, 2.0)
+        self.assertEqual(outcome.fill_quantity, 1.0)
+        self.assertEqual(outcome.remaining_quantity, 1.0)
+        self.assertEqual(outcome.fill_status, "PARTIAL_FILL")
+
+    def test_compatibility_placeholder_bid_ask_is_not_treated_as_observed_quote(self):
+        cfg = BacktestConfig(spread_pct=0.01, model_liquidity=False)
+        outcome = BacktestEngine(cfg).execution_model.simulate(
+            side="BUY",
+            reference_price=100.0,
+            order_quantity=1.0,
+            event_time_utc="2025-01-01T12:00:00Z",
+            available_cash=1000.0,
+            position_quantity=0.0,
+            observed_bid=100.0,
+            observed_ask=100.0,
+        )
+        self.assertGreater(outcome.spread_impact, 0.0)
+        self.assertIn("MODELED", outcome.modeled_liquidity)
+
+    def test_execution_cost_breakdown_is_traceable(self):
+        result = BacktestEngine(BacktestConfig(fee_rate=0.01, slippage_bps=50.0)).run(self._fixture_events())
+        self.assertIn("execution_cost_breakdown", result.metrics)
+        breakdown = result.metrics["execution_cost_breakdown"]
+        self.assertIn("fee_cost", breakdown)
+        self.assertIn("slippage_cost", breakdown)
+        self.assertIn("spread_cost", breakdown)
+
 
 if __name__ == "__main__":
     unittest.main()

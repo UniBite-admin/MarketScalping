@@ -86,6 +86,7 @@ class BacktestState:
     realized_pnl: float = 0.0
     fees_paid: float = 0.0
     slippage_paid: float = 0.0
+    spread_paid: float = 0.0
     rejected_executions: int = 0
     approved_executions: int = 0
     current_equity: float = 0.0
@@ -357,6 +358,7 @@ class BacktestEngine:
                     "realized_pnl": state.realized_pnl,
                     "fees": state.fees_paid,
                     "slippage": state.slippage_paid,
+                    "spread_cost": state.spread_paid,
                     "peak_equity": state.peak_equity,
                     "max_drawdown": state.max_drawdown,
                 }
@@ -547,6 +549,7 @@ class BacktestEngine:
 
         state.fees_paid += outcome.fees
         state.slippage_paid += outcome.slippage_impact
+        state.spread_paid += outcome.spread_impact
 
     def _compute_metrics(self, state: BacktestState) -> dict[str, Any]:
         closed = state.closed_trades
@@ -600,6 +603,12 @@ class BacktestEngine:
             "rejected_execution_count": state.rejected_executions,
             "approved_execution_count": state.approved_executions,
             "available_statistical_metrics": ["net_pnl", "roi", "gross_profit", "gross_loss", "win_rate", "average_win", "average_loss", "expectancy", "profit_factor", "max_drawdown", "trade_count", "average_holding_time_seconds", "consecutive_wins", "consecutive_losses", "total_fees", "total_slippage_impact"],
+            "execution_cost_breakdown": {
+                "fee_cost": state.fees_paid,
+                "slippage_cost": state.slippage_paid,
+                "spread_cost": state.spread_paid,
+                "gross_trade_pnl_effect": net_pnl,
+            },
         }
 
     def _invalid_result(self, normalized: list[dict[str, Any]], validation_errors: list[str], *, replay_status: str, replay_rejection_reasons: tuple[tuple[str, int], ...] = ()) -> BacktestResult:
