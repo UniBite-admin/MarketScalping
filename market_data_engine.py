@@ -14,6 +14,7 @@ from accounting_engine import AccountingDecision, AccountingEngine
 from execution_journal_reconciler import ExecutionJournalReconciler
 from feature_signal_engine import FeatureSignalEngine
 from execution_engine import ExecutionEngine
+from paper_session_evidence import PaperSessionEvidenceCollector
 from position_manager import PositionManager
 from risk_engine import RiskEngine
 from strategy_engine import StrategyEngine
@@ -168,6 +169,17 @@ class MarketDataEngine:
         self._stale_warning_active = False
         self.recovery_status = "RECOVERY_NOT_COMPLETE"
         self._startup_recovery_attempted = False
+        self.paper_session = None
+        self.paper_session_id = None
+        self.session_start_utc = None
+        self.session_end_utc = None
+        self.paper_result = None
+        self._paper_session_strategy_decisions: list[dict] = []
+        self._paper_session_risk_decisions: list[dict] = []
+        self._paper_session_execution_events: list[dict] = []
+        self._paper_session_accounting_decisions: list[dict] = []
+        self._paper_session_position_events: list[dict] = []
+        self._paper_session_data_quality_incidents: list[dict] = []
 
         self.feature_engine = None
         if self.feature_engine_enabled:
@@ -253,6 +265,123 @@ class MarketDataEngine:
         )
 
         self.run_startup_recovery()
+
+    def start_paper_session(self) -> dict[str, object] | None:
+        if self.paper_session is not None:
+            return self.paper_result
+
+        self.session_start_utc = datetime.now(timezone.utc).isoformat()
+        self.session_end_utc = self.session_start_utc
+        self.paper_session = PaperSessionEvidenceCollector(
+            market=self.market,
+            data_source="Bitvavo WebSocket",
+            session_start_utc=self.session_start_utc,
+            session_end_utc=self.session_end_utc,
+            strategy_config={
+                "name": self.accounting_strategy_name,
+                "strategy_identity": self.accounting_strategy_name,
+                "max_spread_pct": self.strategy_max_spread_pct,
+                "max_tick_interval_ms": self.strategy_max_tick_interval_ms,
+                "min_momentum_return": self.strategy_min_momentum_return,
+            },
+            risk_config={
+                "name": "simulation_risk",
+                "risk_identity": "simulation_risk_v1",
+                "max_spread_pct": self.risk_max_spread_pct,
+                "max_tick_interval_ms": self.risk_max_tick_interval_ms,
+                "min_signal_strength": self.risk_min_signal_strength,
+                "max_candidates_per_minute": self.risk_max_candidates_per_minute,
+            },
+            execution_config={
+                "mode": "SIMULATED_ORDER_PREPARED",
+                "engine": "ExecutionEngine",
+                "enabled": self.execution_engine_enabled,
+            },
+            fee_config={"fee_rate": self.accounting_fee_rate},
+            spread_config={"spread_pct": self.strategy_max_spread_pct},
+            slippage_config={"slippage_bps": self.accounting_slippage_bps},
+            latency_config={
+                "render_interval_seconds": self.render_interval,
+                "stale_after_seconds": self.stale_after_seconds,
+                "stale_check_interval_seconds": self.stale_check_interval,
+                "reconnect_delay_seconds": self.reconnect_delay,
+            },
+            runtime_artifacts=[
+                self.feature_output_path,
+                self.strategy_output_path,
+                self.risk_output_path,
+                self.execution_output_path,
+                self.position_output_path,
+                self.accounting_trade_ledger_path,
+                self.accounting_account_state_path,
+                self.accounting_open_position_state_path,
+            ],
+            session_root_dir="data/paper_sessions",
+            source_kind="live_runtime_session",
+        )
+        self.paper_session_id = self.paper_session.paper_session_id
+        self.logger.info(
+            "paper_session_started session_id=%s market=%s start_utc=%s",
+            self.paper_session_id,
+            self.market,
+            self.session_start_utc,
+        )
+        return {"paper_session_id": self.paper_session_id, "paper_result": None, "artifact_path": None}
+
+    def _record_data_quality_incident(self, incident_type: str, details: str) -> None:
+        if self.paper_session is None:
+            return
+        self._paper_session_data_quality_incidents.append(
+            {
+                "type": incident_type,
+                "details": details,
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "source": "MarketDataEngine",
+            }
+        )
+
+    def _record_runtime_event(self, collection_name: str, event: object) -> None:
+        if self.paper_session is None or event is None:
+            return
+        payload = getattr(event, "__dict__", None)
+        if payload is None:
+            if isinstance(event, dict):
+                payload = event
+            else:
+                payload = {"value": str(event)}
+        target = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            **payload,
+        }
+        target_collection = getattr(self, collection_name, None)
+        if target_collection is not None:
+            target_collection.append(target)
+
+    def finalize_paper_session(self) -> dict[str, object] | None:
+        if self.paper_session is None:
+            return None
+
+        self.session_end_utc = datetime.now(timezone.utc).isoformat()
+        self.paper_session.session_end_utc = self.session_end_utc
+
+        result = self.paper_session.finalize(
+            accounting_engine=self.accounting_engine,
+            position_manager=self.position_manager,
+            strategy_decisions=self._paper_session_strategy_decisions,
+            risk_decisions=self._paper_session_risk_decisions,
+            execution_events=self._paper_session_execution_events,
+            accounting_decisions=self._paper_session_accounting_decisions,
+            position_events=self._paper_session_position_events,
+            data_quality_incidents=self._paper_session_data_quality_incidents,
+        )
+        self.paper_result = result
+        self.logger.info(
+            "paper_session_finalized session_id=%s path=%s end_utc=%s",
+            self.paper_session_id,
+            result["artifact_path"],
+            self.session_end_utc,
+        )
+        return result
 
     def run_startup_recovery(self) -> str:
         if self._startup_recovery_attempted and self.recovery_status in {"READY", "BLOCKED_ON_DIVERGENCE"}:
@@ -390,6 +519,7 @@ class MarketDataEngine:
                     )
         except Exception as exc:
             self.logger.error("feature_engine_update_error error=%s", exc)
+            self._record_data_quality_incident("feature_engine_error", str(exc))
 
     def update_strategy(self, event_time_utc: str | None = None) -> None:
         if self.feature_engine is None or self.strategy_engine is None:
@@ -401,6 +531,20 @@ class MarketDataEngine:
 
         try:
             decision = self.strategy_engine.evaluate(strategy_input, event_time_utc=event_time_utc)
+            if self.paper_session is not None and decision is not None:
+                self._paper_session_strategy_decisions.append(
+                    {
+                        "timestamp_utc": decision.timestamp_utc,
+                        "market": decision.market,
+                        "action": decision.action,
+                        "reason": decision.reason,
+                        "signal_strength": decision.signal_strength,
+                        "spread_pct": decision.spread_pct,
+                        "micro_return_1": decision.micro_return_1,
+                        "micro_return_5": decision.micro_return_5,
+                        "tick_interval_ms": decision.tick_interval_ms,
+                    }
+                )
             if self.debug:
                 self.logger.debug(
                     "strategy_decision_debug action=%s reason=%s strength=%.8f",
@@ -411,6 +555,7 @@ class MarketDataEngine:
             return decision
         except Exception as exc:
             self.logger.error("strategy_engine_update_error error=%s", exc)
+            self._record_data_quality_incident("strategy_engine_error", str(exc))
             return None
 
     def update_risk(self, strategy_decision, event_time_utc: str | None = None):
@@ -419,6 +564,21 @@ class MarketDataEngine:
 
         try:
             risk_decision = self.risk_engine.evaluate(strategy_decision, event_time_utc=event_time_utc)
+            if self.paper_session is not None and risk_decision is not None:
+                self._paper_session_risk_decisions.append(
+                    {
+                        "timestamp_utc": risk_decision.timestamp_utc,
+                        "market": risk_decision.market,
+                        "strategy_action": risk_decision.strategy_action,
+                        "risk_action": risk_decision.risk_action,
+                        "approved": risk_decision.approved,
+                        "reason": risk_decision.reason,
+                        "signal_strength": risk_decision.signal_strength,
+                        "spread_pct": risk_decision.spread_pct,
+                        "tick_interval_ms": risk_decision.tick_interval_ms,
+                        "candidates_last_minute": risk_decision.candidates_last_minute,
+                    }
+                )
             if self.debug:
                 self.logger.debug(
                     "risk_decision_debug action=%s approved=%s reason=%s",
@@ -429,6 +589,7 @@ class MarketDataEngine:
             return risk_decision
         except Exception as exc:
             self.logger.error("risk_engine_update_error error=%s", exc)
+            self._record_data_quality_incident("risk_engine_error", str(exc))
             return None
 
     def update_execution(self, risk_decision, event_time_utc: str | None = None):
@@ -437,6 +598,20 @@ class MarketDataEngine:
 
         try:
             execution_event = self.execution_engine.process(risk_decision, event_time_utc=event_time_utc)
+            if self.paper_session is not None and execution_event is not None:
+                self._paper_session_execution_events.append(
+                    {
+                        "execution_event_id": execution_event.execution_event_id,
+                        "timestamp_utc": execution_event.timestamp_utc,
+                        "market": execution_event.market,
+                        "strategy_action": execution_event.strategy_action,
+                        "risk_action": execution_event.risk_action,
+                        "execution_action": execution_event.execution_action,
+                        "reason": execution_event.reason,
+                        "signal_strength": execution_event.signal_strength,
+                        "spread_pct": execution_event.spread_pct,
+                    }
+                )
             if self.debug:
                 self.logger.debug(
                     "execution_event_debug action=%s reason=%s",
@@ -446,6 +621,7 @@ class MarketDataEngine:
             return execution_event
         except Exception as exc:
             self.logger.error("execution_engine_update_error error=%s", exc)
+            self._record_data_quality_incident("execution_engine_error", str(exc))
             return None
 
     def update_position_manager(self, accounting_decision: AccountingDecision | None, event_time_utc: str | None = None):
@@ -464,6 +640,25 @@ class MarketDataEngine:
                 accounting_decision,
                 event_time_utc=event_time_utc,
             )
+            if self.paper_session is not None and position_event is not None:
+                self._paper_session_position_events.append(
+                    {
+                        "timestamp_utc": position_event.timestamp_utc,
+                        "market": position_event.market,
+                        "position_id": position_event.position_id,
+                        "lifecycle_action": position_event.lifecycle_action,
+                        "status": position_event.status,
+                        "hold_events": position_event.hold_events,
+                        "entry_time_utc": position_event.entry_time_utc,
+                        "close_time_utc": position_event.close_time_utc,
+                        "entry_reason": position_event.entry_reason,
+                        "exit_reason": position_event.exit_reason,
+                        "entry_signal_strength": position_event.entry_signal_strength,
+                        "entry_spread_pct": position_event.entry_spread_pct,
+                        "exit_signal_strength": position_event.exit_signal_strength,
+                        "exit_spread_pct": position_event.exit_spread_pct,
+                    }
+                )
             if self.debug and position_event is not None:
                 self.logger.debug(
                     "position_event_debug action=%s status=%s id=%s",
@@ -474,6 +669,7 @@ class MarketDataEngine:
             return position_event
         except Exception as exc:
             self.logger.error("position_manager_update_error error=%s", exc)
+            self._record_data_quality_incident("position_manager_error", str(exc))
             return None
 
     def update_accounting(self, execution_event, ticker_state, strategy_decision, event_time_utc: str | None = None) -> None:
@@ -493,8 +689,24 @@ class MarketDataEngine:
                 signal=signal,
                 confidence=confidence,
             )
+            if self.paper_session is not None:
+                decision = getattr(self.accounting_engine, "last_decision", None)
+                if decision is not None:
+                    self._paper_session_accounting_decisions.append(
+                        {
+                            "status": decision.status,
+                            "execution_event_id": decision.execution_event_id,
+                            "execution_action": decision.execution_action,
+                            "reason": decision.reason,
+                            "financial_effect_applied": decision.financial_effect_applied,
+                            "market": decision.market,
+                            "signal_strength": decision.signal_strength,
+                            "spread_pct": decision.spread_pct,
+                        }
+                    )
         except Exception as exc:
             self.logger.error("accounting_engine_update_error error=%s", exc)
+            self._record_data_quality_incident("accounting_engine_error", str(exc))
 
     def get_latest_strategy_input(self):
         if self.feature_engine is None:
@@ -922,6 +1134,8 @@ class MarketDataEngine:
         )
 
     def stop(self) -> None:
+        if self.paper_session is not None and self.paper_result is None:
+            self.finalize_paper_session()
         self.should_stop = True
         self.logger.info("shutdown_requested")
         self.set_status("closing", "Stopping market data engine")
@@ -1097,9 +1311,13 @@ def main() -> None:
     )
 
     try:
+        engine.start_paper_session()
         engine.run()
     except KeyboardInterrupt:
         engine.stop()
+    finally:
+        if engine.paper_session is not None and engine.paper_result is None:
+            engine.finalize_paper_session()
 
 
 def _extract_payload_event_time_utc(data: dict) -> str | None:
