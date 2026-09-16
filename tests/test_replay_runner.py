@@ -119,6 +119,38 @@ class ReplayRunnerTests(unittest.TestCase):
 
         self.assertEqual(first, second)
 
+    def test_same_timestamp_events_follow_canonical_original_index_order(self):
+        runner = ReplayRunner(position_max_hold_events=2)
+        captured = []
+
+        class DummyEngine:
+            def handle_control_message(self, message, event_time_utc=None):
+                captured.append((event_time_utc, message.get("lastPrice", message.get("price"))))
+
+        with patch.object(ReplayRunner, "_build_engine", return_value=DummyEngine()):
+            result = runner.replay([
+                {
+                    "event_time_utc": "2025-01-01T12:00:00Z",
+                    "event_type": "ticker",
+                    "market": "BTC-EUR",
+                    "bid": 99.0,
+                    "ask": 100.0,
+                    "last": 99.5,
+                },
+                {
+                    "event_time_utc": "2025-01-01T12:00:00Z",
+                    "event_type": "ticker",
+                    "market": "BTC-EUR",
+                    "bid": 100.0,
+                    "ask": 101.0,
+                    "last": 100.5,
+                },
+            ])
+
+        self.assertEqual(result.events_processed, 2)
+        self.assertEqual([price for _, price in captured], [99.5, 100.5])
+        self.assertEqual(result.event_timestamps, ("2025-01-01T12:00:00+00:00", "2025-01-01T12:00:00+00:00"))
+
     def test_canonical_dataset_state_and_replay_eligibility_are_explicit(self):
         runner = ReplayRunner(position_max_hold_events=2)
         success = runner.replay(self._fixture_events())
