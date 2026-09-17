@@ -162,6 +162,7 @@ class BitvavoTradeCollector:
 
             page_trade_ids: list[str] = []
             page_seen_ids: set[str] = set()
+            boundary_overlap_seen = False
             no_valid_rows = True
             for raw_row in raw_rows:
                 trade, rejection_reason, is_duplicate = self._parse_trade_row(raw_row, market)
@@ -176,12 +177,17 @@ class BitvavoTradeCollector:
                         rejection_reasons["timestamp_outside_requested_window"] = rejection_reasons.get("timestamp_outside_requested_window", 0) + 1
                         continue
 
+                if previous_last_trade_id is not None and trade.trade_id == previous_last_trade_id and not boundary_overlap_seen:
+                    boundary_overlap_seen = True
+                    continue
+
                 if trade.trade_id in page_seen_ids:
                     duplicated += 1
                     continue
 
-                if page_count > 1 and trade.trade_id in seen_trade_ids:
-                    raise BitvavoTradeCollectorError(f"duplicate trade_id encountered during pagination: {trade.trade_id}")
+                if trade.trade_id in seen_trade_ids:
+                    duplicated += 1
+                    continue
 
                 if previous_last_trade_id is not None and trade.trade_id == previous_last_trade_id:
                     raise BitvavoTradeCollectorError("pagination did not advance: repeated trade ID across pages")
@@ -192,28 +198,36 @@ class BitvavoTradeCollector:
                 page_trade_ids.append(trade.trade_id)
                 no_valid_rows = False
 
+            if page_count > 1 and not page_trade_ids:
+                raise BitvavoTradeCollectorError("pagination made no progress: continuation page contained only previously seen trade IDs")
+
             if no_valid_rows:
+                if previous_last_trade_id is not None and boundary_overlap_seen and not page_trade_ids:
+                    raise BitvavoTradeCollectorError("pagination boundary overlap without forward progress")
                 break
 
             if page_trade_ids and previous_last_trade_id is not None and page_trade_ids[0] == previous_last_trade_id:
                 raise BitvavoTradeCollectorError("pagination cursor did not progress; first trade ID repeated")
 
-            if len(raw_rows) < limit:
+            previous_last_trade_id = page_trade_ids[-1]
+            last_cursor = page_trade_ids[-1]
+
+            if page_count == 1:
+                if len(raw_rows) < limit:
+                    coverage_exhausted = True
+                    pagination_status = "short_page_proves_exhaustion"
+                    break
+                if len(raw_rows) == limit:
+                    continue
                 coverage_exhausted = True
-                pagination_status = "short_page_proves_exhaustion"
-                previous_last_trade_id = page_trade_ids[-1]
-                last_cursor = page_trade_ids[-1]
+                pagination_status = "page_count_below_limit"
                 break
 
-            if len(raw_rows) == limit:
-                previous_last_trade_id = page_trade_ids[-1]
-                last_cursor = page_trade_ids[-1]
+            if page_count > 1:
                 continue
 
             coverage_exhausted = True
             pagination_status = "page_count_below_limit"
-            previous_last_trade_id = page_trade_ids[-1]
-            last_cursor = page_trade_ids[-1]
             break
 
         accepted_records.sort(key=lambda record: (record.raw_timestamp_ms, record.trade_id))

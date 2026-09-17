@@ -72,7 +72,9 @@ class HistoricalDatasetCollectorTests(unittest.TestCase):
         def fetcher_factory(request):
             fetch_calls["count"] += 1
             if "tradeIdFrom" in request.full_url:
-                return __import__("json").dumps(page_two).encode("utf-8")
+                if fetch_calls["count"] == 2:
+                    return __import__("json").dumps(page_two).encode("utf-8")
+                return __import__("json").dumps([]).encode("utf-8")
             return __import__("json").dumps(page_one).encode("utf-8")
 
         base_dir = self.tmp_path / "datasets"
@@ -84,18 +86,18 @@ class HistoricalDatasetCollectorTests(unittest.TestCase):
         result = collector.collect_dataset("BTC-EUR", 0, DAY_MS, dataset_id="pagination-manifest")
 
         self.assertEqual(result["collection_status"], "VALIDATED")
-        self.assertEqual(result["page_count"], 2)
+        self.assertEqual(result["page_count"], 3)
         self.assertTrue(result["coverage_exhausted"])
         self.assertEqual(result["total_record_count"], 1002)
         self.assertEqual(result["pagination_mode"], "tradeIdFrom")
-        self.assertEqual(result["pagination_status"], "short_page_proves_exhaustion")
+        self.assertEqual(result["pagination_status"], "empty_page")
         manifest_path = base_dir / "pagination-manifest" / "manifest.json"
         self.assertTrue(manifest_path.exists())
         validated = collector.validate_manifest(manifest_path)
         self.assertEqual(validated["validation_status"], "VALIDATED")
         self.assertEqual(validated["total_record_count"], 1002)
-        self.assertEqual(validated["page_count"], 2)
-        self.assertEqual(fetch_calls["count"], 2)
+        self.assertEqual(validated["page_count"], 3)
+        self.assertEqual(fetch_calls["count"], 3)
 
     def test_resume_ignores_existing_valid_windows_and_continues(self):
         base_dir = self.tmp_path / "datasets" / "resume-case"
