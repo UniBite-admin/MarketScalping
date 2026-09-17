@@ -67,6 +67,12 @@ class TradeCollectionResult:
     integrity_issues: tuple[str, ...] = ()
     dataset_status: str = "VALIDATED"
     validation_result: str = "SUCCESS"
+    page_count: int = 0
+    page_sizes: tuple[int, ...] = ()
+    pagination_cursor: str | None = None
+    coverage_exhausted: bool = False
+    pagination_mode: str = "single_request"
+    pagination_status: str = "not_required"
 
 
 class BitvavoTradeCollectorError(RuntimeError):
@@ -115,37 +121,112 @@ class BitvavoTradeCollector:
         if (end_timestamp_ms - start_timestamp_ms) > MAX_WINDOW_MS:
             raise BitvavoTradeCollectorError("time window must not exceed 24 hours")
 
-        response = self._fetch_trades(market, start_timestamp_ms, end_timestamp_ms, limit)
-        payload = self._decode_response(response)
-        raw_rows = self._extract_trade_rows(payload)
-
         accepted_records: list[BitvavoHistoricalTrade] = []
         rejection_reasons: dict[str, int] = {}
         seen_trade_ids: set[str] = set()
         duplicated = 0
+        page_sizes: list[int] = []
+        page_count = 0
+        last_cursor: str | None = None
+        previous_last_trade_id: str | None = None
+        coverage_exhausted = False
+        pagination_mode = "single_request"
+        pagination_status = "not_required"
 
-        for raw_row in raw_rows:
-            trade, rejection_reason, is_duplicate = self._parse_trade_row(raw_row, market)
-            if trade is None:
-                rejection_reasons[rejection_reason] = rejection_reasons.get(rejection_reason, 0) + 1
-                if is_duplicate:
+        while True:
+            if page_count >= self._max_pagination_pages(limit):
+                raise BitvavoTradeCollectorError("maximum pagination iterations exceeded before window exhaustion was proven")
+
+            page_count += 1
+            response = self._fetch_trades(
+                market,
+                start_timestamp_ms,
+                end_timestamp_ms,
+                limit,
+                trade_id_from=last_cursor,
+            )
+            payload = self._decode_response(response)
+            raw_rows = self._extract_trade_rows(payload)
+            page_sizes.append(len(raw_rows))
+            pagination_mode = "tradeIdFrom"
+            pagination_status = "continuing"
+
+            if not raw_rows:
+                if page_count == 1:
+                    coverage_exhausted = True
+                    pagination_status = "zero_trade_window"
+                    break
+                coverage_exhausted = True
+                pagination_status = "empty_page_after_full_page" if page_sizes[-2] == limit else "empty_page"
+                break
+
+            page_trade_ids: list[str] = []
+            page_seen_ids: set[str] = set()
+            no_valid_rows = True
+            for raw_row in raw_rows:
+                trade, rejection_reason, is_duplicate = self._parse_trade_row(raw_row, market)
+                if trade is None:
+                    rejection_reasons[rejection_reason] = rejection_reasons.get(rejection_reason, 0) + 1
+                    if is_duplicate:
+                        duplicated += 1
+                    continue
+
+                if trade.raw_timestamp_ms is not None:
+                    if trade.raw_timestamp_ms < start_timestamp_ms or trade.raw_timestamp_ms > end_timestamp_ms:
+                        rejection_reasons["timestamp_outside_requested_window"] = rejection_reasons.get("timestamp_outside_requested_window", 0) + 1
+                        continue
+
+                if trade.trade_id in page_seen_ids:
                     duplicated += 1
+                    continue
+
+                if page_count > 1 and trade.trade_id in seen_trade_ids:
+                    raise BitvavoTradeCollectorError(f"duplicate trade_id encountered during pagination: {trade.trade_id}")
+
+                if previous_last_trade_id is not None and trade.trade_id == previous_last_trade_id:
+                    raise BitvavoTradeCollectorError("pagination did not advance: repeated trade ID across pages")
+
+                seen_trade_ids.add(trade.trade_id)
+                page_seen_ids.add(trade.trade_id)
+                accepted_records.append(trade)
+                page_trade_ids.append(trade.trade_id)
+                no_valid_rows = False
+
+            if no_valid_rows:
+                break
+
+            if page_trade_ids and previous_last_trade_id is not None and page_trade_ids[0] == previous_last_trade_id:
+                raise BitvavoTradeCollectorError("pagination cursor did not progress; first trade ID repeated")
+
+            if len(raw_rows) < limit:
+                coverage_exhausted = True
+                pagination_status = "short_page_proves_exhaustion"
+                previous_last_trade_id = page_trade_ids[-1]
+                last_cursor = page_trade_ids[-1]
+                break
+
+            if len(raw_rows) == limit:
+                previous_last_trade_id = page_trade_ids[-1]
+                last_cursor = page_trade_ids[-1]
                 continue
 
-            if trade.trade_id in seen_trade_ids:
-                duplicated += 1
-                continue
+            coverage_exhausted = True
+            pagination_status = "page_count_below_limit"
+            previous_last_trade_id = page_trade_ids[-1]
+            last_cursor = page_trade_ids[-1]
+            break
 
-            seen_trade_ids.add(trade.trade_id)
-            accepted_records.append(trade)
-
-        accepted_records.sort(key=lambda record: (record.event_time_utc, record.trade_id))
+        accepted_records.sort(key=lambda record: (record.raw_timestamp_ms, record.trade_id))
 
         integrity_issues: list[str] = []
         collection_status = "success"
-        window_complete = True
+        window_complete = coverage_exhausted
 
-        if rejection_reasons:
+        if "timestamp_outside_requested_window" in rejection_reasons:
+            collection_status = "blocked"
+            window_complete = False
+            integrity_issues.append("timestamp_outside_requested_window")
+        elif rejection_reasons:
             collection_status = "rejected"
             window_complete = False
             integrity_issues.append("invalid_rows_present")
@@ -160,12 +241,17 @@ class BitvavoTradeCollector:
                     collection_status = "blocked"
                     window_complete = False
 
-        if raw_rows and not accepted_records and not rejection_reasons:
+        if page_count > 0 and page_sizes and page_sizes[-1] == limit and not coverage_exhausted:
             collection_status = "blocked"
             window_complete = False
-            integrity_issues.append("empty_accepted_window")
+            integrity_issues.append("pagination_not_exhausted")
 
-        if not raw_rows:
+        if not accepted_records and not rejection_reasons and page_count == 0:
+            collection_status = "success"
+            window_complete = True
+            integrity_issues = []
+
+        if not accepted_records and page_count > 0 and not rejection_reasons:
             collection_status = "success"
             window_complete = True
             integrity_issues = []
@@ -179,7 +265,7 @@ class BitvavoTradeCollector:
         if resolved_output_path is not None:
             self._write_jsonl(resolved_output_path, accepted_records)
 
-        if len(raw_rows) == 0:
+        if page_count == 0 or (page_count == 1 and page_sizes and page_sizes[0] == 0):
             dataset_status = "EMPTY_VALID_DATASET"
             validation_result = "SUCCESS"
         elif collection_status in {"rejected", "blocked"} or bool(integrity_issues) or len(accepted_records) == 0:
@@ -194,7 +280,7 @@ class BitvavoTradeCollector:
             start_timestamp_ms=start_timestamp_ms,
             end_timestamp_ms=end_timestamp_ms,
             limit=limit,
-            fetched=len(raw_rows),
+            fetched=len(accepted_records),
             accepted=len(accepted_records),
             rejected=sum(rejection_reasons.values()),
             duplicated=duplicated,
@@ -206,16 +292,30 @@ class BitvavoTradeCollector:
             integrity_issues=tuple(integrity_issues),
             dataset_status=dataset_status,
             validation_result=validation_result,
+            page_count=page_count,
+            page_sizes=tuple(page_sizes),
+            pagination_cursor=last_cursor,
+            coverage_exhausted=coverage_exhausted,
+            pagination_mode=pagination_mode,
+            pagination_status=pagination_status,
         )
 
-    def _fetch_trades(self, market: str, start_timestamp_ms: int, end_timestamp_ms: int, limit: int) -> Any:
-        query = urlencode(
-            {
-                "start": str(start_timestamp_ms),
-                "end": str(end_timestamp_ms),
-                "limit": str(limit),
-            }
-        )
+    def _fetch_trades(
+        self,
+        market: str,
+        start_timestamp_ms: int,
+        end_timestamp_ms: int,
+        limit: int,
+        trade_id_from: str | None = None,
+    ) -> Any:
+        query_map: dict[str, str] = {
+            "start": str(start_timestamp_ms),
+            "end": str(end_timestamp_ms),
+            "limit": str(limit),
+        }
+        if trade_id_from is not None:
+            query_map["tradeIdFrom"] = str(trade_id_from)
+        query = urlencode(query_map)
         endpoint_path = f"/{market}/trades"
         url = f"{self.base_url}{endpoint_path}?{query}"
 
@@ -258,6 +358,12 @@ class BitvavoTradeCollector:
             "Bitvavo-Access-Signature": signature,
             "Bitvavo-Access-Window": DEFAULT_ACCESS_WINDOW_MS,
         }
+
+    @staticmethod
+    def _max_pagination_pages(limit: int) -> int:
+        if limit <= 0:
+            return 1
+        return 1000
 
     @staticmethod
     def _decode_response(response: Any) -> Any:

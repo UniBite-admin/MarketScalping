@@ -1,0 +1,50 @@
+{
+  "actual_end_utc": "2026-09-17T19:02:27.871+00:00",
+  "actual_start_utc": "2026-09-17T18:57:27.871+00:00",
+  "attempt_count": 1,
+  "collection_status": "VALIDATED",
+  "completeness_status": "COMPLETE",
+  "coverage_status": "COVERAGE_OK",
+  "created_at_utc": "2026-09-17T19:02:28.134+00:00",
+  "dataset_id": "btc_eur_real_test_20260917T190227Z",
+  "file_list": [
+    "BTC-EUR_20260917T185727.871Z_20260917T190227.871Z.jsonl"
+  ],
+  "frozen": false,
+  "frozen_at_utc": null,
+  "integrity_issues": [],
+  "market": "BTC-EUR",
+  "per_file_end_utc": {
+    "BTC-EUR_20260917T185727.871Z_20260917T190227.871Z.jsonl": "2026-09-17T19:02:27.871+00:00"
+  },
+  "per_file_record_count": {
+    "BTC-EUR_20260917T185727.871Z_20260917T190227.871Z.jsonl": 55
+  },
+  "per_file_sha256": {
+    "BTC-EUR_20260917T185727.871Z_20260917T190227.871Z.jsonl": "e5a74cebf747b600183b3379b1758953a02e432adb22be3b850f7c14adf35912"
+  },
+  "per_file_start_utc": {
+    "BTC-EUR_20260917T185727.871Z_20260917T190227.871Z.jsonl": "2026-09-17T18:57:27.871+00:00"
+  },
+  "requested_end_utc": "2026-09-17T19:02:27.871+00:00",
+  "requested_start_utc": "2026-09-17T18:57:27.871+00:00",
+  "schema_version": "1.0",
+  "source": "bitvavo_public_historical_trades",
+  "total_record_count": 55,
+  "validation_status": "VALIDATED",
+  "window_count": 1,
+  "window_size_ms": 86400000,
+  "windows": [
+    {
+      "accepted_count": 55,
+      "duplicate_count": 0,
+      "file": "BTC-EUR_20260917T185727.871Z_20260917T190227.871Z.jsonl",
+      "integrity_issues": [],
+      "rejected_count": 0,
+      "sha256": "e5a74cebf747b600183b3379b1758953a02e432adb22be3b850f7c14adf35912",
+      "status": "VALIDATED",
+      "window_end_ms": 1789671747871,
+      "window_start_ms": 1789671447871
+    }
+  ]
+}

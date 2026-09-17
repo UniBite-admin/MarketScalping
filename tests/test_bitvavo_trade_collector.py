@@ -325,6 +325,122 @@ class BitvavoTradeCollectorTests(unittest.TestCase):
         self.assertEqual(result.accepted, 1)
         self.assertEqual(result.records[0].trade_id, "trade-from-id")
 
+    def test_exact_1000_page_requires_continuation_and_preserves_additional_records(self):
+        page_one = [{
+            "trade_id": f"trade-{idx}",
+            "timestamp": 1735732860000 - idx,
+            "amount": "0.25",
+            "price": "95000.5",
+            "side": "buy",
+        } for idx in range(1000)]
+        page_two = [{
+            "trade_id": f"tail-{idx}",
+            "timestamp": 1735731859999 - idx,
+            "amount": "0.25",
+            "price": "95000.5",
+            "side": "sell",
+        } for idx in range(7)]
+        requests_seen = []
+
+        def fetcher(request):
+            requests_seen.append(request.full_url)
+            if "tradeIdFrom" in request.full_url:
+                return DummyResponse(page_two)
+            return DummyResponse(page_one)
+
+        collector = BitvavoTradeCollector(fetcher=fetcher, default_output_dir=self.tmp_path / "raw")
+        result = collector.collect_window("BTC-EUR", 1735731800000, 1735732860000, output_path=self.tmp_path / "out.jsonl")
+
+        self.assertEqual(len(requests_seen), 2)
+        self.assertIn(f"tradeIdFrom={page_one[-1]['trade_id']}", requests_seen[1])
+        self.assertEqual(result.page_count, 2)
+        self.assertEqual(len(result.records), 1007)
+        self.assertEqual(len({record.trade_id for record in result.records}), 1007)
+        self.assertTrue(result.window_complete)
+        self.assertTrue(result.coverage_exhausted)
+        self.assertEqual(result.collection_status, "success")
+        self.assertEqual(result.pagination_status, "short_page_proves_exhaustion")
+        self.assertEqual([record.trade_id for record in result.records], [
+            record.trade_id for record in sorted(result.records, key=lambda record: (record.raw_timestamp_ms, record.trade_id))
+        ])
+
+    def test_exact_1000_page_with_proven_exhaustion_finishes_without_extra_request(self):
+        page_one = [{
+            "trade_id": f"full-{idx}",
+            "timestamp": 1735732860000 - idx,
+            "amount": "0.25",
+            "price": "95000.5",
+            "side": "buy",
+        } for idx in range(1000)]
+        requests_seen = []
+
+        def fetcher(request):
+            requests_seen.append(request.full_url)
+            if "tradeIdFrom" in request.full_url:
+                return DummyResponse([])
+            return DummyResponse(page_one)
+
+        collector = BitvavoTradeCollector(fetcher=fetcher, default_output_dir=self.tmp_path / "raw")
+        result = collector.collect_window("BTC-EUR", 1735731800000, 1735732860000, output_path=self.tmp_path / "out.jsonl")
+
+        self.assertEqual(len(requests_seen), 2)
+        self.assertTrue(result.window_complete)
+        self.assertTrue(result.coverage_exhausted)
+        self.assertEqual(result.page_count, 2)
+        self.assertEqual(result.pagination_status, "empty_page_after_full_page")
+        self.assertEqual(len(result.records), 1000)
+
+    def test_trade_id_from_cursor_uses_last_trade_id_from_descending_page(self):
+        page_one = [{
+            "trade_id": f"newest-{idx}",
+            "timestamp": 1735732860000 - idx,
+            "amount": "0.25",
+            "price": "95000.5",
+            "side": "buy",
+        } for idx in range(1000)]
+        page_two = [{
+            "trade_id": "older-1",
+            "timestamp": 1735732780000,
+            "amount": "0.25",
+            "price": "95000.5",
+            "side": "sell",
+        }]
+
+        def fetcher(request):
+            if "tradeIdFrom" not in request.full_url:
+                return DummyResponse(page_one)
+            self.assertIn(f"tradeIdFrom={page_one[-1]['trade_id']}", request.full_url)
+            return DummyResponse(page_two)
+
+        collector = BitvavoTradeCollector(fetcher=fetcher, default_output_dir=self.tmp_path / "raw")
+        result = collector.collect_window("BTC-EUR", 1735731800000, 1735732860000, output_path=self.tmp_path / "out.jsonl")
+
+        self.assertEqual(result.page_count, 2)
+        self.assertEqual(result.pagination_mode, "tradeIdFrom")
+        self.assertIn("older-1", {record.trade_id for record in result.records})
+        self.assertEqual(len(result.records), 1001)
+
+    def test_max_page_guard_raises_on_unbounded_pagination_loop(self):
+        call_count = {"value": 0}
+
+        def fetcher(request):
+            call_count["value"] += 1
+            page = [{
+                "trade_id": f"guard-{call_count['value']}-{idx}",
+                "timestamp": 1735732800000 + idx,
+                "amount": "0.25",
+                "price": "95000.5",
+                "side": "buy",
+            } for idx in range(1000)]
+            return DummyResponse(page)
+
+        collector = BitvavoTradeCollector(fetcher=fetcher, default_output_dir=self.tmp_path / "raw")
+        with self.assertRaises(BitvavoTradeCollectorError) as exc:
+            collector.collect_window("BTC-EUR", 1735732800000, 1735732860000, output_path=self.tmp_path / "out.jsonl")
+
+        self.assertIn("maximum pagination iterations exceeded", str(exc.exception))
+        self.assertGreaterEqual(call_count["value"], 1000)
+
     def test_http_failure_is_reported_safely(self):
         def failing_fetcher(request):
             raise URLError("simulated failure")

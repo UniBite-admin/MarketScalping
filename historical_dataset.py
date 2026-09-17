@@ -158,6 +158,12 @@ class HistoricalDatasetCollector:
                     "file_path": str(file_path) if result.output_path else str(output_path),
                     "sha256": digest,
                     "integrity_issues": list(result.integrity_issues),
+                    "page_count": result.page_count,
+                    "page_sizes": list(result.page_sizes),
+                    "coverage_exhausted": result.coverage_exhausted,
+                    "pagination_mode": result.pagination_mode,
+                    "pagination_status": result.pagination_status,
+                    "window_complete": result.window_complete,
                 }
             except (BitvavoTradeCollectorError, OSError, TimeoutError) as exc:
                 last_error = str(exc)
@@ -306,6 +312,11 @@ class HistoricalDatasetCollector:
             "frozen": False,
             "frozen_at_utc": None,
             "attempt_count": sum(int(item.get("attempt_count", 0)) for item in results),
+            "pagination_mode": max((item.get("pagination_mode") for item in results if item.get("pagination_mode") is not None), default="single_request"),
+            "page_count": max((int(item.get("page_count", 0)) for item in results), default=0),
+            "page_sizes": [page for item in results for page in item.get("page_sizes", [])],
+            "coverage_exhausted": any(bool(item.get("coverage_exhausted")) for item in results),
+            "pagination_status": max((str(item.get("pagination_status")) for item in results if item.get("pagination_status") is not None), default="not_required", key=lambda value: (value != "not_required", value != "continuing", value != "short_page_proves_exhaustion", value != "empty_page_after_full_page", value != "zero_trade_window")),
         }
         return manifest
 
