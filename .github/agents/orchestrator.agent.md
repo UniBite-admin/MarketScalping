@@ -58,6 +58,8 @@ The Orchestrator must not reinterpret these constraints as generic software guid
 
 ## Required workflow behavior
 Before routing work, the Orchestrator must:
+0. Read `REPO_MAP.md` at the repository root and use it as the primary architectural navigation aid to identify relevant modules, directories, ADRs/contracts, tests, and data/artifact locations for the task.
+	- Use the map to limit file inspection to the minimal set required for the task; expand scope only if the map is insufficient or contradictory with authoritative sources.
 1. Read the task request and identify the actual objective.
 2. Inspect the repository and relevant docs/tests to determine which workflow path is actually relevant.
 3. Resolve whether the task is architecture, implementation, QA, or safety review.

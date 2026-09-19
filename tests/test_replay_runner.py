@@ -119,6 +119,41 @@ class ReplayRunnerTests(unittest.TestCase):
 
         self.assertEqual(first, second)
 
+    def test_replay_accepts_single_pass_generator_input(self):
+        runner = ReplayRunner(position_max_hold_events=2)
+
+        class SinglePassGenerator:
+            def __init__(self, items):
+                self._iterator = iter(items)
+                self._consumed = False
+
+            def __iter__(self):
+                if self._consumed:
+                    raise RuntimeError("single-pass iterable was re-iterated")
+                self._consumed = True
+                return self._iterator
+
+        result = runner.replay(SinglePassGenerator(self._fixture_events()))
+
+        self.assertEqual(result.events_processed, 8)
+        self.assertEqual(result.events_rejected, 0)
+        self.assertEqual(result.dataset_status, "CANONICALIZED")
+
+    def test_summary_mode_streams_chronological_input_without_timestamp_traces(self):
+        runner = ReplayRunner(position_max_hold_events=2)
+
+        result = runner.replay(
+            iter(sorted(self._fixture_events(), key=lambda item: item["event_time_utc"])),
+            assume_canonical_chronological=True,
+            summary_mode=True,
+        )
+
+        self.assertEqual(result.events_processed, 8)
+        self.assertEqual(result.events_rejected, 0)
+        self.assertEqual(result.event_timestamps, ())
+        self.assertEqual(result.strategy_timestamps, ())
+        self.assertEqual(result.dataset_status, "CANONICALIZED")
+
     def test_same_timestamp_events_follow_canonical_original_index_order(self):
         runner = ReplayRunner(position_max_hold_events=2)
         captured = []
@@ -264,6 +299,65 @@ class ReplayRunnerTests(unittest.TestCase):
         self.assertEqual(normalized.last, 123.45)
         self.assertEqual(normalized.bid, 123.45)
         self.assertEqual(normalized.ask, 123.45)
+
+    def test_trade_replay_path_fail_closes_historical_trade_only_events(self):
+        runner = ReplayRunner(position_max_hold_events=2)
+
+        with patch("replay_runner.MarketDataEngine.handle_control_message") as mock_handle:
+            result = runner.replay(
+                [
+                    {
+                        "event_time_utc": "2025-01-01T12:00:00Z",
+                        "event_type": "trade",
+                        "market": "BTC-EUR",
+                        "last": 123.45,
+                    }
+                ],
+                assume_canonical_chronological=True,
+                summary_mode=True,
+            )
+
+        mock_handle.assert_not_called()
+        self.assertEqual(result.events_total, 1)
+        self.assertEqual(result.events_processed, 0)
+        self.assertEqual(result.events_rejected, 1)
+        self.assertIn(("historical_trade_only_event", 1), result.rejection_reasons)
+        self.assertEqual(result.event_timestamps, ())
+
+    def test_mixed_historical_replay_does_not_reuse_stale_quote_state_for_trade_only_event(self):
+        runner = ReplayRunner(position_max_hold_events=2)
+
+        result = runner.replay(
+            [
+                {
+                    "event_time_utc": "2025-01-01T12:00:00Z",
+                    "event_type": "ticker",
+                    "market": "BTC-EUR",
+                    "bid": 100.0,
+                    "ask": 101.0,
+                    "last": 100.5,
+                },
+                {
+                    "event_time_utc": "2025-01-01T12:00:01Z",
+                    "event_type": "trade",
+                    "market": "BTC-EUR",
+                    "last": 100.75,
+                },
+            ],
+            assume_canonical_chronological=True,
+        )
+
+        self.assertEqual(result.events_total, 2)
+        self.assertEqual(result.events_processed, 1)
+        self.assertEqual(result.events_rejected, 1)
+        self.assertIn(("historical_trade_only_event", 1), result.rejection_reasons)
+        self.assertEqual(result.event_timestamps, ("2025-01-01T12:00:00+00:00",))
+        self.assertEqual(result.strategy_timestamps, ("2025-01-01T12:00:00+00:00",))
+        self.assertEqual(result.risk_timestamps, ("2025-01-01T12:00:00+00:00",))
+        self.assertEqual(result.execution_timestamps, ("2025-01-01T12:00:00+00:00",))
+        self.assertEqual(result.account_timestamps, ())
+        self.assertEqual(result.position_timestamps, ())
+        self.assertEqual(result.trade_timestamps, ())
 
     def test_replay_does_not_start_live_websocket_or_runner(self):
         runner = ReplayRunner(position_max_hold_events=2)

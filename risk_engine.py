@@ -162,6 +162,7 @@ class RiskEngine:
         max_risk_per_trade: float = 100.0,
         max_daily_loss: float | None = None,
         max_consecutive_losses: int | None = None,
+        persistence_batch_size: int = 1,
     ):
         self.output_path = output_path
         self.logger = logger
@@ -176,6 +177,8 @@ class RiskEngine:
         self.max_risk_per_trade = float(max_risk_per_trade)
         self.max_daily_loss = None if max_daily_loss is None else float(max_daily_loss)
         self.max_consecutive_losses = None if max_consecutive_losses is None else int(max_consecutive_losses)
+        self.persistence_batch_size = max(int(persistence_batch_size), 1)
+        self._pending_rows: list[list[str]] = []
 
         self._candidate_timestamps = deque()
         self._prepare_output_file()
@@ -516,9 +519,9 @@ class RiskEngine:
         return parsed.astimezone(timezone.utc)
 
     def _persist(self, decision: RiskDecision) -> RiskDecision:
-        with open(self.output_path, "a", newline="", encoding="utf-8") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerow(decision.to_csv_row())
+        self._pending_rows.append(decision.to_csv_row())
+        if len(self._pending_rows) >= self.persistence_batch_size:
+            self.flush()
 
         self.logger.info(
             "risk_decision action=%s approved=%s reason=%s strength=%.8f spread_pct=%.8f",
@@ -530,6 +533,19 @@ class RiskEngine:
         )
 
         return decision
+
+    def flush(self) -> None:
+        if not self._pending_rows:
+            return
+
+        with open(self.output_path, "a", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerows(self._pending_rows)
+
+        self._pending_rows.clear()
+
+    def close(self) -> None:
+        self.flush()
 
 
 def _fmt(value: float | None) -> str:

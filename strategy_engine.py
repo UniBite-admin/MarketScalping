@@ -56,12 +56,15 @@ class StrategyEngine:
         max_spread_pct: float = 0.02,
         max_tick_interval_ms: float = 2000.0,
         min_momentum_return: float = 0.0,
+        persistence_batch_size: int = 1,
     ):
         self.output_path = output_path
         self.logger = logger
         self.max_spread_pct = max_spread_pct
         self.max_tick_interval_ms = max_tick_interval_ms
         self.min_momentum_return = min_momentum_return
+        self.persistence_batch_size = max(int(persistence_batch_size), 1)
+        self._pending_rows: list[list[str]] = []
 
         self._prepare_output_file()
 
@@ -168,9 +171,9 @@ class StrategyEngine:
         )
 
     def _persist_decision(self, decision: StrategyDecision) -> None:
-        with open(self.output_path, "a", newline="", encoding="utf-8") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerow(decision.to_csv_row())
+        self._pending_rows.append(decision.to_csv_row())
+        if len(self._pending_rows) >= self.persistence_batch_size:
+            self.flush()
 
         self.logger.info(
             "strategy_decision action=%s reason=%s strength=%.8f spread_pct=%.8f",
@@ -179,6 +182,19 @@ class StrategyEngine:
             decision.signal_strength,
             decision.spread_pct,
         )
+
+    def flush(self) -> None:
+        if not self._pending_rows:
+            return
+
+        with open(self.output_path, "a", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerows(self._pending_rows)
+
+        self._pending_rows.clear()
+
+    def close(self) -> None:
+        self.flush()
 
 
 def _fmt(value: float | None) -> str:

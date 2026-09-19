@@ -7,6 +7,7 @@ import math
 import os
 import tempfile
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,9 +16,9 @@ from typing import Any, Iterable
 from accounting_engine import AccountingEngine
 from backtest_execution_model import BacktestConfig, BacktestExecutionModel, ExecutionOutcome
 from execution_engine import ExecutionEngine
-from feature_signal_engine import StrategyInput
+from feature_signal_engine import FeatureSignalEngine, StrategyInput
 from position_manager import PositionManager
-from replay_runner import ReplayRunner, _normalize_replay_event
+from replay_runner import _normalize_replay_event
 from risk_engine import RiskEngine, RiskState
 from strategy_engine import StrategyEngine
 
@@ -213,6 +214,60 @@ class BacktestState:
     pending_orders: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass
+class _NormalizationSummary:
+    events_total: int = 0
+    events_processed: int = 0
+    rejection_reasons: Counter[str] = field(default_factory=Counter)
+
+    @property
+    def rejection_reason_items(self) -> tuple[tuple[str, int], ...]:
+        return tuple(sorted(self.rejection_reasons.items()))
+
+    @property
+    def dataset_status(self) -> str:
+        if self.events_total == 0:
+            return "EMPTY_VALID_DATASET"
+        if self.events_processed == 0:
+            return "REJECTED"
+        return "CANONICALIZED"
+
+    @property
+    def canonicalization_result(self) -> str:
+        if self.events_total == 0:
+            return "NOT_APPLICABLE"
+        if self.events_processed == 0:
+            return "REJECTED"
+        return "SUCCESS"
+
+
+@dataclass
+class _HistoricalTickerState:
+    market: str
+    bid: float | None
+    ask: float | None
+    last: float | None
+
+    @property
+    def spread(self) -> float | None:
+        if self.bid is None or self.ask is None:
+            return None
+        return self.ask - self.bid
+
+    @property
+    def spread_percentage(self) -> float | None:
+        spread = self.spread
+        if spread is None or self.bid in (None, 0):
+            return None
+        return (spread / self.bid) * 100
+
+    @property
+    def mid_price(self) -> float | None:
+        if self.bid is None or self.ask is None:
+            return None
+        return (self.bid + self.ask) / 2.0
+
+
 class BacktestEngine:
     def __init__(self, config: BacktestConfig | None = None):
         self.config = config or BacktestConfig()
@@ -220,29 +275,42 @@ class BacktestEngine:
         self.execution_model = BacktestExecutionModel(self.config)
         self.logger = logging.getLogger("backtest_engine")
 
-    def run(self, events: Iterable[dict], *, strategy_configuration: dict[str, Any] | None = None, risk_configuration: dict[str, Any] | None = None) -> BacktestResult:
-        normalized = self._normalize_events(events)
+    def run(
+        self,
+        events: Iterable[dict],
+        *,
+        strategy_configuration: dict[str, Any] | None = None,
+        risk_configuration: dict[str, Any] | None = None,
+        summary_mode: bool = False,
+        assume_canonical_chronological: bool = False,
+    ) -> BacktestResult:
         if self.validation_errors:
-            return self._invalid_result(normalized, self.validation_errors, replay_status="INVALID")
-        if not normalized:
-            return self._invalid_result([], ["empty_or_rejected_dataset"], replay_status="REJECTED")
+            return self._invalid_result([], self.validation_errors, replay_status="INVALID")
 
-        replay = ReplayRunner(
-            market=self.config.market,
-            position_max_hold_events=2,
-            accounting_starting_balance=self.config.initial_capital,
-        ).replay([event for event in [item["raw"] for item in normalized]])
-
-        if replay.dataset_status != "CANONICALIZED":
-            return self._invalid_result(
-                normalized,
-                [f"replay_status_{replay.dataset_status.lower()}"],
-                replay_status=replay.dataset_status,
-                replay_rejection_reasons=replay.rejection_reasons,
-            )
+        normalization = _NormalizationSummary()
+        if assume_canonical_chronological:
+            normalized_events: Iterable[dict[str, Any]] = self._iter_normalized_events(events, normalization)
+        else:
+            normalized_events = self._normalize_events(events, normalization)
+            if normalization.dataset_status != "CANONICALIZED":
+                return self._invalid_result(
+                    list(normalized_events),
+                    ["empty_or_rejected_dataset"] if normalization.events_total == 0 else [f"replay_status_{normalization.dataset_status.lower()}"],
+                    replay_status=normalization.dataset_status,
+                    replay_rejection_reasons=normalization.rejection_reason_items,
+                )
 
         temp_dir = tempfile.mkdtemp(prefix="backtest_8_2_")
-        strategy_engine = StrategyEngine(os.path.join(temp_dir, "strategy.csv"), self.logger)
+        buffered_persistence_batch_size = 512
+        feature_engine = FeatureSignalEngine(
+            os.path.join(temp_dir, "features.csv"),
+            self.logger,
+        )
+        strategy_engine = StrategyEngine(
+            os.path.join(temp_dir, "strategy.csv"),
+            self.logger,
+            persistence_batch_size=buffered_persistence_batch_size,
+        )
         risk_engine = RiskEngine(
             os.path.join(temp_dir, "risk.csv"),
             self.logger,
@@ -254,6 +322,7 @@ class BacktestEngine:
             max_position_size=self.config.initial_capital / max(self.config.min_notional, 1.0),
             max_exposure=self.config.initial_capital * 2.0,
             max_risk_per_trade=self.config.initial_capital * 0.25,
+            persistence_batch_size=buffered_persistence_batch_size,
         )
         accounting_engine = AccountingEngine(
             trade_ledger_path=os.path.join(temp_dir, "trade_ledger.csv"),
@@ -275,114 +344,134 @@ class BacktestEngine:
         state.peak_equity = self.config.initial_capital
         state.max_drawdown = 0.0
 
-        previous_last: float | None = None
         strategy_decisions: list[dict[str, Any]] = []
         risk_decisions: list[dict[str, Any]] = []
         execution_events: list[dict[str, Any]] = []
         accounting_decisions: list[dict[str, Any]] = []
         position_events: list[dict[str, Any]] = []
-        pending_event_index = 0
+        store_traces = not summary_mode
+        event_count = 0
+        first_event_time_utc: str | None = None
+        last_event_time_utc: str | None = None
+        dataset_hasher = hashlib.sha256()
 
-        for event_index, item in enumerate(normalized):
-            raw_event = item["raw"]
-            event = item["normalized"]
-            current_last = float(event.last)
-            strategy_input = self._to_strategy_input(event)
-            strategy_decision = strategy_engine.evaluate(strategy_input, event_time_utc=event.event_time_utc)
-            strategy_decisions.append(self._as_mapping(strategy_decision))
+        try:
+            for event_index, item in enumerate(normalized_events):
+                raw_event = item["raw"]
+                event = item["normalized"]
+                event_count += 1
+                if first_event_time_utc is None:
+                    first_event_time_utc = event.event_time_utc
+                last_event_time_utc = event.event_time_utc
+                dataset_hasher.update(json.dumps(raw_event, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+                dataset_hasher.update(b"\n")
 
-            risk_state = accounting_engine.build_risk_state()
-            order_quantity = self._determine_order_quantity(current_last, state.cash, state.position_quantity)
-            candidate_position_size = max(order_quantity, 0.0)
-            candidate_entry_notional = order_quantity * current_last
-            protected_exit_value = max(current_last * (1.0 - max(self.config.spread_pct, 0.0)), 0.0)
-            risk_decision = risk_engine.evaluate(
-                strategy_decision,
-                event_time_utc=event.event_time_utc,
-                risk_state=risk_state,
-                candidate_position_size=candidate_position_size,
-                candidate_entry_notional=candidate_entry_notional,
-                protected_exit_value=protected_exit_value,
-            )
-            risk_decisions.append(self._as_mapping(risk_decision))
+                strategy_input = self._build_historical_strategy_input(feature_engine, event)
+                if strategy_input is None:
+                    self._refresh_state_from_accounting(state, accounting_engine)
+                    self._record_snapshot(state, event.event_time_utc, enabled=store_traces)
+                    continue
 
-            if strategy_decision.action != "CANDIDATE_TRADE":
-                previous_last = current_last
-                state.current_equity = float(accounting_engine.equity)
-                if state.current_equity > state.peak_equity:
-                    state.peak_equity = state.current_equity
-                drawdown = max(0.0, (state.peak_equity - state.current_equity) / max(state.peak_equity, 1e-9))
-                state.max_drawdown = max(state.max_drawdown, drawdown)
-                state.snapshots.append(
-                    {
-                        "timestamp_utc": event.event_time_utc,
-                        "cash": state.cash,
-                        "position_quantity": state.position_quantity,
-                        "equity": state.current_equity,
-                        "realized_pnl": state.realized_pnl,
-                        "fees": state.fees_paid,
-                        "slippage": state.slippage_paid,
-                        "peak_equity": state.peak_equity,
-                        "max_drawdown": state.max_drawdown,
-                    }
+                current_last = float(strategy_input.last)
+                strategy_decision = strategy_engine.evaluate(strategy_input, event_time_utc=event.event_time_utc)
+                if store_traces:
+                    strategy_decisions.append(self._as_mapping(strategy_decision))
+
+                risk_state = accounting_engine.build_risk_state()
+                order_quantity = self._determine_order_quantity(current_last, state.cash, state.position_quantity)
+                candidate_position_size = max(order_quantity, 0.0)
+                candidate_entry_notional = order_quantity * current_last
+                protected_exit_value = max(current_last * (1.0 - max(self.config.spread_pct, 0.0)), 0.0)
+                risk_decision = risk_engine.evaluate(
+                    strategy_decision,
+                    event_time_utc=event.event_time_utc,
+                    risk_state=risk_state,
+                    candidate_position_size=candidate_position_size,
+                    candidate_entry_notional=candidate_entry_notional,
+                    protected_exit_value=protected_exit_value,
                 )
-                continue
+                if store_traces:
+                    risk_decisions.append(self._as_mapping(risk_decision))
 
-            if not risk_decision.approved:
-                previous_last = current_last
-                state.current_equity = float(accounting_engine.equity)
-                if state.current_equity > state.peak_equity:
-                    state.peak_equity = state.current_equity
-                drawdown = max(0.0, (state.peak_equity - state.current_equity) / max(state.peak_equity, 1e-9))
-                state.max_drawdown = max(state.max_drawdown, drawdown)
-                state.snapshots.append(
-                    {
-                        "timestamp_utc": event.event_time_utc,
-                        "cash": state.cash,
-                        "position_quantity": state.position_quantity,
-                        "equity": state.current_equity,
-                        "realized_pnl": state.realized_pnl,
-                        "fees": state.fees_paid,
-                        "slippage": state.slippage_paid,
-                        "peak_equity": state.peak_equity,
-                        "max_drawdown": state.max_drawdown,
-                    }
-                )
-                continue
+                if strategy_decision.action != "CANDIDATE_TRADE":
+                    self._refresh_state_from_accounting(state, accounting_engine)
+                    self._record_snapshot(state, event.event_time_utc, enabled=store_traces)
+                    continue
 
-            if self.config.latency_ticks > 0:
-                state.pending_orders.append(
-                    {
-                        "event_index": event_index,
-                        "signal": strategy_decision.action,
-                        "reference_price": current_last,
-                        "order_quantity": order_quantity,
-                        "observation_time": event.event_time_utc,
-                    }
-                )
-                while state.pending_orders and (event_index - state.pending_orders[0]["event_index"]) >= self.config.latency_ticks:
-                    pending = state.pending_orders.pop(0)
-                    if pending["signal"] == "NO_TRADE" or pending["signal"] == "INVALID":
-                        continue
-                    risk_decision = risk_engine.evaluate(
-                        strategy_decision,
-                        event_time_utc=pending["observation_time"],
-                        risk_state=accounting_engine.build_risk_state(),
-                        candidate_position_size=max(pending["order_quantity"], 0.0),
-                        candidate_entry_notional=pending["order_quantity"] * pending["reference_price"],
-                        protected_exit_value=max(pending["reference_price"] * (1.0 - max(self.config.spread_pct, 0.0)), 0.0),
+                if not risk_decision.approved:
+                    self._refresh_state_from_accounting(state, accounting_engine)
+                    self._record_snapshot(state, event.event_time_utc, enabled=store_traces)
+                    continue
+
+                if self.config.latency_ticks > 0:
+                    state.pending_orders.append(
+                        {
+                            "event_index": event_index,
+                            "signal": strategy_decision.action,
+                            "reference_price": current_last,
+                            "order_quantity": order_quantity,
+                            "observation_time": event.event_time_utc,
+                        }
                     )
-                    if not risk_decision.approved:
-                        continue
-                    execution_event = execution_engine.process(risk_decision, event_time_utc=pending["observation_time"])
-                    execution_events.append(self._as_mapping(execution_event))
+                    while state.pending_orders and (event_index - state.pending_orders[0]["event_index"]) >= self.config.latency_ticks:
+                        pending = state.pending_orders.pop(0)
+                        if pending["signal"] == "NO_TRADE" or pending["signal"] == "INVALID":
+                            continue
+                        risk_decision = risk_engine.evaluate(
+                            strategy_decision,
+                            event_time_utc=pending["observation_time"],
+                            risk_state=accounting_engine.build_risk_state(),
+                            candidate_position_size=max(pending["order_quantity"], 0.0),
+                            candidate_entry_notional=pending["order_quantity"] * pending["reference_price"],
+                            protected_exit_value=max(pending["reference_price"] * (1.0 - max(self.config.spread_pct, 0.0)), 0.0),
+                        )
+                        if not risk_decision.approved:
+                            continue
+                        execution_event = execution_engine.process(risk_decision, event_time_utc=pending["observation_time"])
+                        if store_traces:
+                            execution_events.append(self._as_mapping(execution_event))
+                        if execution_event.execution_action != "SIMULATED_ORDER_PREPARED":
+                            continue
+                        outcome = self.execution_model.simulate(
+                            side="BUY" if strategy_decision.action == "CANDIDATE_TRADE" else "SELL",
+                            reference_price=pending["reference_price"],
+                            order_quantity=pending["order_quantity"],
+                            event_time_utc=pending["observation_time"],
+                            available_cash=max(accounting_engine.available_balance, 0.0),
+                            position_quantity=max(accounting_engine.open_position.position_size, 0.0) if accounting_engine.open_position is not None else 0.0,
+                            observed_bid=event.bid,
+                            observed_ask=event.ask,
+                        )
+                        self._apply_outcome(state, outcome, event, event_index)
+                        accounting_decision = accounting_engine.process_execution(
+                            execution_event,
+                            bid=event.bid,
+                            ask=event.ask,
+                            timestamp_utc=pending["observation_time"],
+                            signal=strategy_decision.action,
+                            confidence=strategy_decision.signal_strength,
+                        )
+                        if store_traces:
+                            accounting_decisions.append(self._as_mapping(accounting_decision) if accounting_decision is not None else {"status": "REJECTED"})
+                        if accounting_decision is not None and accounting_decision.financial_effect_applied:
+                            position_event = position_manager.process_accounting_decision(accounting_decision, event_time_utc=pending["observation_time"])
+                            if position_event is not None:
+                                if store_traces:
+                                    position_events.append(self._as_mapping(position_event))
+                        self._refresh_state_from_accounting(state, accounting_engine)
+                else:
+                    execution_event = execution_engine.process(risk_decision, event_time_utc=event.event_time_utc)
+                    if store_traces:
+                        execution_events.append(self._as_mapping(execution_event))
                     if execution_event.execution_action != "SIMULATED_ORDER_PREPARED":
+                        self._refresh_state_from_accounting(state, accounting_engine)
+                        self._record_snapshot(state, event.event_time_utc, enabled=store_traces)
                         continue
                     outcome = self.execution_model.simulate(
                         side="BUY" if strategy_decision.action == "CANDIDATE_TRADE" else "SELL",
-                        reference_price=pending["reference_price"],
-                        order_quantity=pending["order_quantity"],
-                        event_time_utc=pending["observation_time"],
+                        reference_price=current_last,
+                        order_quantity=order_quantity,
+                        event_time_utc=event.event_time_utc,
                         available_cash=max(accounting_engine.available_balance, 0.0),
                         position_quantity=max(accounting_engine.open_position.position_size, 0.0) if accounting_engine.open_position is not None else 0.0,
                         observed_bid=event.bid,
@@ -393,99 +482,40 @@ class BacktestEngine:
                         execution_event,
                         bid=event.bid,
                         ask=event.ask,
-                        timestamp_utc=pending["observation_time"],
+                        timestamp_utc=event.event_time_utc,
                         signal=strategy_decision.action,
                         confidence=strategy_decision.signal_strength,
                     )
-                    accounting_decisions.append(self._as_mapping(accounting_decision) if accounting_decision is not None else {"status": "REJECTED"})
+                    if store_traces:
+                        accounting_decisions.append(self._as_mapping(accounting_decision) if accounting_decision is not None else {"status": "REJECTED"})
                     if accounting_decision is not None and accounting_decision.financial_effect_applied:
-                        position_event = position_manager.process_accounting_decision(accounting_decision, event_time_utc=pending["observation_time"])
+                        position_event = position_manager.process_accounting_decision(accounting_decision, event_time_utc=event.event_time_utc)
                         if position_event is not None:
-                            position_events.append(self._as_mapping(position_event))
-                    state.cash = accounting_engine.available_balance
-                    state.position_quantity = accounting_engine.open_position.position_size if accounting_engine.open_position is not None else 0.0
-                    state.realized_pnl = accounting_engine.realized_pnl
-                    state.current_equity = float(accounting_engine.equity)
-            else:
-                execution_event = execution_engine.process(risk_decision, event_time_utc=event.event_time_utc)
-                execution_events.append(self._as_mapping(execution_event))
-                if execution_event.execution_action != "SIMULATED_ORDER_PREPARED":
-                    previous_last = current_last
-                    state.current_equity = float(accounting_engine.equity)
-                    if state.current_equity > state.peak_equity:
-                        state.peak_equity = state.current_equity
-                    drawdown = max(0.0, (state.peak_equity - state.current_equity) / max(state.peak_equity, 1e-9))
-                    state.max_drawdown = max(state.max_drawdown, drawdown)
-                    state.snapshots.append(
-                        {
-                            "timestamp_utc": event.event_time_utc,
-                            "cash": state.cash,
-                            "position_quantity": state.position_quantity,
-                            "equity": state.current_equity,
-                            "realized_pnl": state.realized_pnl,
-                            "fees": state.fees_paid,
-                            "slippage": state.slippage_paid,
-                            "peak_equity": state.peak_equity,
-                            "max_drawdown": state.max_drawdown,
-                        }
-                    )
-                    continue
-                outcome = self.execution_model.simulate(
-                    side="BUY" if strategy_decision.action == "CANDIDATE_TRADE" else "SELL",
-                    reference_price=current_last,
-                    order_quantity=order_quantity,
-                    event_time_utc=event.event_time_utc,
-                    available_cash=max(accounting_engine.available_balance, 0.0),
-                    position_quantity=max(accounting_engine.open_position.position_size, 0.0) if accounting_engine.open_position is not None else 0.0,
-                    observed_bid=event.bid,
-                    observed_ask=event.ask,
-                )
-                self._apply_outcome(state, outcome, event, event_index)
-                accounting_decision = accounting_engine.process_execution(
-                    execution_event,
-                    bid=event.bid,
-                    ask=event.ask,
-                    timestamp_utc=event.event_time_utc,
-                    signal=strategy_decision.action,
-                    confidence=strategy_decision.signal_strength,
-                )
-                accounting_decisions.append(self._as_mapping(accounting_decision) if accounting_decision is not None else {"status": "REJECTED"})
-                if accounting_decision is not None and accounting_decision.financial_effect_applied:
-                    position_event = position_manager.process_accounting_decision(accounting_decision, event_time_utc=event.event_time_utc)
-                    if position_event is not None:
-                        position_events.append(self._as_mapping(position_event))
-                state.cash = accounting_engine.available_balance
-                state.position_quantity = accounting_engine.open_position.position_size if accounting_engine.open_position is not None else 0.0
-                state.realized_pnl = accounting_engine.realized_pnl
-                state.current_equity = float(accounting_engine.equity)
+                            if store_traces:
+                                position_events.append(self._as_mapping(position_event))
+                    self._refresh_state_from_accounting(state, accounting_engine)
 
-            previous_last = current_last
-            if state.current_equity > state.peak_equity:
-                state.peak_equity = state.current_equity
-            drawdown = max(0.0, (state.peak_equity - state.current_equity) / max(state.peak_equity, 1e-9))
-            state.max_drawdown = max(state.max_drawdown, drawdown)
-            state.snapshots.append(
-                {
-                    "timestamp_utc": event.event_time_utc,
-                    "cash": state.cash,
-                    "position_quantity": state.position_quantity,
-                    "equity": state.current_equity,
-                    "realized_pnl": state.realized_pnl,
-                    "fees": state.fees_paid,
-                    "slippage": state.slippage_paid,
-                    "spread_cost": state.spread_paid,
-                    "peak_equity": state.peak_equity,
-                    "max_drawdown": state.max_drawdown,
-                }
+                self._record_snapshot(state, event.event_time_utc, enabled=store_traces)
+        finally:
+            risk_engine.close()
+            strategy_engine.close()
+
+        if normalization.dataset_status != "CANONICALIZED":
+            return self._invalid_result(
+                [],
+                ["empty_or_rejected_dataset"] if normalization.events_total == 0 else [f"replay_status_{normalization.dataset_status.lower()}"],
+                replay_status=normalization.dataset_status,
+                replay_rejection_reasons=normalization.rejection_reason_items,
             )
 
         metrics = self._compute_metrics(state)
+        dataset_id = dataset_hasher.hexdigest()
         observed = {
-            "event_count": len(normalized),
-            "first_event_time_utc": normalized[0]["normalized"].event_time_utc if normalized else None,
-            "last_event_time_utc": normalized[-1]["normalized"].event_time_utc if normalized else None,
-            "dataset_status": replay.dataset_status,
-            "canonicalization_result": replay.canonicalization_result,
+            "event_count": event_count,
+            "first_event_time_utc": first_event_time_utc,
+            "last_event_time_utc": last_event_time_utc,
+            "dataset_status": normalization.dataset_status,
+            "canonicalization_result": normalization.canonicalization_result,
         }
         modeled = {
             "fee_rate": self.config.fee_rate,
@@ -524,7 +554,7 @@ class BacktestEngine:
                         "min_order_size": self.config.min_order_size,
                         "min_notional": self.config.min_notional,
                     },
-                    "events": [event["raw"] for event in normalized],
+                    "dataset_id": dataset_id,
                 },
                 sort_keys=True,
             ).encode("utf-8")
@@ -570,14 +600,8 @@ class BacktestEngine:
         execution_costs = sum(float(trade["fees"]) + float(trade["slippage_impact"]) + float(trade["spread_impact"]) for trade in trade_ledger)
         net_pnl = realized_pnl if realized_pnl != 0 else sum(float(trade["net_pnl"]) for trade in trade_ledger)
         total_execution_cost = execution_costs
-        max_drawdown = max(float(point["max_drawdown"]) for point in equity_curve) if equity_curve else 0.0
-        current_drawdown = max(0.0, (max(float(point["peak_equity"]) for point in equity_curve) - float(equity_curve[-1]["equity"])) / max(float(point["peak_equity"]) for point in equity_curve) if equity_curve else 0.0)
-        if equity_curve:
-            current_peak = max(float(point["peak_equity"]) for point in equity_curve)
-            current_equity = float(equity_curve[-1]["equity"])
-            current_drawdown = max(0.0, (current_peak - current_equity) / max(current_peak, 1e-9))
-        else:
-            current_drawdown = 0.0
+        max_drawdown = state.max_drawdown
+        current_drawdown = max(0.0, (state.peak_equity - state.current_equity) / max(state.peak_equity, 1e-9))
         current_drawdown_pct = current_drawdown
 
         cost_attribution = CostAttribution(
@@ -635,8 +659,8 @@ class BacktestEngine:
         )
 
         run_metadata = RunMetadata(
-            dataset_id=hashlib.sha256(json.dumps({"events": [event["raw"] for event in normalized]}, sort_keys=True).encode("utf-8")).hexdigest(),
-            event_count=len(normalized),
+            dataset_id=dataset_id,
+            event_count=event_count,
             first_event_time_utc=observed["first_event_time_utc"],
             last_event_time_utc=observed["last_event_time_utc"],
             strategy_configuration=strategy_configuration or {},
@@ -663,7 +687,7 @@ class BacktestEngine:
 
         result = BacktestResult(
             run_id=run_signature,
-            dataset_id=run_metadata.dataset_id,
+            dataset_id=dataset_id,
             market=self.config.market,
             event_start_utc=observed["first_event_time_utc"],
             event_end_utc=observed["last_event_time_utc"],
@@ -689,11 +713,11 @@ class BacktestEngine:
             metrics=metrics,
             warnings=warnings,
             limitations=limitations,
-            validation_status="PASS" if replay.dataset_status == "CANONICALIZED" else "INVALID",
+            validation_status="PASS" if normalization.dataset_status == "CANONICALIZED" else "INVALID",
             observed_assumptions=observed,
             modeled_assumptions=modeled,
-            replay_status=replay.dataset_status,
-            replay_rejection_reasons=replay.rejection_reasons,
+            replay_status=normalization.dataset_status,
+            replay_rejection_reasons=normalization.rejection_reason_items,
             strategy_decisions=strategy_decisions,
             risk_decisions=risk_decisions,
             execution_events=execution_events,
@@ -703,39 +727,39 @@ class BacktestEngine:
         )
         return result
 
-    def _normalize_events(self, events: Iterable[dict]) -> list[dict[str, Any]]:
+    def _normalize_events(self, events: Iterable[dict], summary: _NormalizationSummary) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
-        for original_index, raw_event in enumerate(events):
-            norm_event, rejection = _normalize_replay_event(raw_event, original_index)
-            if norm_event is None:
-                continue
-            normalized.append({"raw": raw_event, "normalized": norm_event})
+        for item in self._iter_normalized_events(events, summary):
+            normalized.append(item)
         normalized.sort(key=lambda item: (item["normalized"].event_time_dt, item["normalized"].original_index))
         return normalized
+
+    def _iter_normalized_events(self, events: Iterable[dict], summary: _NormalizationSummary) -> Iterable[dict[str, Any]]:
+        for original_index, raw_event in enumerate(events):
+            summary.events_total += 1
+            norm_event, rejection = _normalize_replay_event(raw_event, original_index)
+            if norm_event is None:
+                summary.rejection_reasons[rejection] += 1
+                continue
+            summary.events_processed += 1
+            yield {"raw": raw_event, "normalized": norm_event}
 
     def _determine_order_quantity(self, reference_price: float, available_cash: float, position_quantity: float) -> float:
         candidate = max(self.config.min_order_size, min(available_cash * 0.5 / max(reference_price, 1e-9), self.config.initial_capital * self.config.max_position_fraction / max(reference_price, 1e-9)))
         return candidate
 
-    def _to_strategy_input(self, event) -> StrategyInput:
-        spread_abs = abs(float(event.ask) - float(event.bid)) if event.ask is not None and event.bid is not None else 0.0
-        spread_pct = spread_abs / max(float(event.last), 1e-9) if float(event.last) else 0.0
-        mid_price = (float(event.bid) + float(event.ask)) / 2.0 if event.bid is not None and event.ask is not None else float(event.last)
-        return StrategyInput(
-            timestamp_utc=event.event_time_utc,
+    def _build_historical_strategy_input(self, feature_engine: FeatureSignalEngine, event) -> StrategyInput | None:
+        if getattr(event, "event_type", None) != "ticker":
+            return None
+
+        ticker_state = _HistoricalTickerState(
             market=event.market,
             bid=float(event.bid),
             ask=float(event.ask),
             last=float(event.last),
-            spread_abs=spread_abs,
-            spread_pct=spread_pct,
-            mid_price=mid_price,
-            micro_return_1=None,
-            micro_return_5=None,
-            spread_change_1=None,
-            spread_change_5=None,
-            tick_interval_ms=None,
         )
+        feature_engine.update(ticker_state, event_time_utc=event.event_time_utc)
+        return feature_engine.get_latest_strategy_input()
 
     def _as_mapping(self, value):
         if value is None:
@@ -743,6 +767,34 @@ class BacktestEngine:
         if hasattr(value, "__dict__"):
             return {key: getattr(value, key) for key in vars(value).keys() if not key.startswith("_")}
         return dict(value)
+
+    def _refresh_state_from_accounting(self, state: BacktestState, accounting_engine: AccountingEngine) -> None:
+        state.cash = accounting_engine.available_balance
+        state.position_quantity = accounting_engine.open_position.position_size if accounting_engine.open_position is not None else 0.0
+        state.realized_pnl = accounting_engine.realized_pnl
+        state.current_equity = float(accounting_engine.equity)
+        if state.current_equity > state.peak_equity:
+            state.peak_equity = state.current_equity
+        drawdown = max(0.0, (state.peak_equity - state.current_equity) / max(state.peak_equity, 1e-9))
+        state.max_drawdown = max(state.max_drawdown, drawdown)
+
+    def _record_snapshot(self, state: BacktestState, event_time_utc: str, *, enabled: bool) -> None:
+        if not enabled:
+            return
+        state.snapshots.append(
+            {
+                "timestamp_utc": event_time_utc,
+                "cash": state.cash,
+                "position_quantity": state.position_quantity,
+                "equity": state.current_equity,
+                "realized_pnl": state.realized_pnl,
+                "fees": state.fees_paid,
+                "slippage": state.slippage_paid,
+                "spread_cost": state.spread_paid,
+                "peak_equity": state.peak_equity,
+                "max_drawdown": state.max_drawdown,
+            }
+        )
 
     def _apply_outcome(self, state: BacktestState, outcome: ExecutionOutcome, event, event_index: int) -> None:
         if not outcome.accepted:

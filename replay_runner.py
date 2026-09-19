@@ -4,13 +4,14 @@ import csv
 import json
 import math
 import re
+import sqlite3
 import tempfile
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import market_data_engine as market_data_module
 from market_data_engine import MarketDataEngine
@@ -42,6 +43,13 @@ class ReplayResult:
     trade_timestamps: tuple[str, ...]
     dataset_status: str = "REJECTED"
     canonicalization_result: str = "REJECTED"
+
+
+@dataclass(frozen=True)
+class _CsvSummary:
+    row_count: int
+    timestamps: tuple[str, ...]
+    last_row: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -92,34 +100,121 @@ class ReplayRunner:
         self.accounting_fee_rate = accounting_fee_rate
         self.accounting_slippage_bps = accounting_slippage_bps
 
-    def replay(self, events: Iterable[dict]) -> ReplayResult:
-        raw_events = list(events)
-        normalized_events: list[_NormalizedReplayEvent] = []
+    def replay(
+        self,
+        events: Iterable[dict],
+        *,
+        assume_canonical_chronological: bool = False,
+        summary_mode: bool = False,
+    ) -> ReplayResult:
         rejection_reasons = Counter()
-
-        for original_index, raw_event in enumerate(raw_events):
-            normalized_event, rejection_reason = _normalize_replay_event(raw_event, original_index)
-            if normalized_event is None:
-                rejection_reasons[rejection_reason] += 1
-                continue
-            normalized_events.append(normalized_event)
-
-        normalized_events.sort(key=lambda item: (item.event_time_dt, item.original_index))
+        total_event_count = 0
+        events_processed = 0
+        capture_timestamps = not summary_mode
+        event_timestamps: list[str] = []
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            engine = self._build_engine(Path(temp_dir))
-            for normalized_event in normalized_events:
-                engine.handle_control_message(
-                    _to_market_data_message(normalized_event),
-                    event_time_utc=normalized_event.event_time_utc,
+            output_dir = Path(temp_dir)
+            if assume_canonical_chronological:
+                engine = self._build_engine(output_dir)
+                for original_index, raw_event in enumerate(events):
+                    total_event_count += 1
+                    normalized_event, rejection_reason = _normalize_replay_event(raw_event, original_index)
+                    if normalized_event is None:
+                        rejection_reasons[rejection_reason] += 1
+                        continue
+                    if _should_skip_historical_event(normalized_event):
+                        rejection_reasons["historical_trade_only_event"] += 1
+                        continue
+                    events_processed += 1
+                    if capture_timestamps:
+                        event_timestamps.append(normalized_event.event_time_utc)
+                    engine.handle_control_message(
+                        _to_market_data_message(normalized_event),
+                        event_time_utc=normalized_event.event_time_utc,
+                    )
+
+                return _build_replay_result(
+                    output_dir=output_dir,
+                    events_total=total_event_count,
+                    events_processed=events_processed,
+                    rejection_reasons=rejection_reasons,
+                    event_timestamps=tuple(event_timestamps),
+                    capture_timestamps=capture_timestamps,
                 )
 
+            db_path = output_dir / "normalized_events.sqlite3"
+            connection = sqlite3.connect(str(db_path))
+            connection.execute(
+                """
+                CREATE TABLE normalized_events (
+                    sort_key REAL NOT NULL,
+                    original_index INTEGER NOT NULL,
+                    event_time_utc TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    bid REAL,
+                    ask REAL,
+                    last REAL
+                )
+                """
+            )
+            try:
+                for original_index, raw_event in enumerate(events):
+                    total_event_count += 1
+                    normalized_event, rejection_reason = _normalize_replay_event(raw_event, original_index)
+                    if normalized_event is None:
+                        rejection_reasons[rejection_reason] += 1
+                        continue
+                    connection.execute(
+                        "INSERT INTO normalized_events (sort_key, original_index, event_time_utc, event_type, market, bid, ask, last) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            normalized_event.event_time_dt.timestamp(),
+                            original_index,
+                            normalized_event.event_time_utc,
+                            normalized_event.event_type,
+                            normalized_event.market,
+                            normalized_event.bid,
+                            normalized_event.ask,
+                            normalized_event.last,
+                        ),
+                    )
+                connection.commit()
+                engine = self._build_engine(output_dir)
+                for row in connection.execute(
+                    "SELECT original_index, event_time_utc, event_type, market, bid, ask, last FROM normalized_events ORDER BY sort_key ASC, original_index ASC"
+                ):
+                    original_index, event_time_utc, event_type, market, bid, ask, last = row
+                    normalized_event = _NormalizedReplayEvent(
+                        original_index=original_index,
+                        event_time_utc=event_time_utc,
+                        event_time_dt=_parse_event_time_utc(event_time_utc),
+                        event_type=event_type,
+                        market=market,
+                        bid=bid,
+                        ask=ask,
+                        last=last,
+                    )
+                    if _should_skip_historical_event(normalized_event):
+                        rejection_reasons["historical_trade_only_event"] += 1
+                        continue
+                    events_processed += 1
+                    if capture_timestamps:
+                        event_timestamps.append(event_time_utc)
+                    engine.handle_control_message(
+                        _to_market_data_message(normalized_event),
+                        event_time_utc=normalized_event.event_time_utc,
+                    )
+            finally:
+                connection.close()
+
             return _build_replay_result(
-                output_dir=Path(temp_dir),
-                events_total=len(raw_events),
-                events_processed=len(normalized_events),
+                output_dir=output_dir,
+                events_total=total_event_count,
+                events_processed=events_processed,
                 rejection_reasons=rejection_reasons,
-                normalized_events=normalized_events,
+                event_timestamps=tuple(event_timestamps),
+                capture_timestamps=capture_timestamps,
             )
 
     def _build_engine(self, output_dir: Path) -> MarketDataEngine:
@@ -159,14 +254,16 @@ class ReplayRunner:
 
 
 def load_replay_events_jsonl(path: str | Path) -> list[dict]:
-    events: list[dict] = []
+    return list(iter_replay_events_jsonl(path))
+
+
+def iter_replay_events_jsonl(path: str | Path) -> Iterator[dict]:
     with Path(path).open("r", encoding="utf-8") as handle:
         for line in handle:
             raw = line.strip()
             if not raw:
                 continue
-            events.append(json.loads(raw))
-    return events
+            yield json.loads(raw)
 
 
 def _normalize_replay_event(raw_event: dict, original_index: int) -> tuple[_NormalizedReplayEvent | None, str]:
@@ -242,71 +339,77 @@ def _to_market_data_message(event: _NormalizedReplayEvent) -> dict:
     }
 
 
+def _should_skip_historical_event(event: _NormalizedReplayEvent) -> bool:
+    return event.event_type == "trade"
+
+
 def _build_replay_result(
     output_dir: Path,
     events_total: int,
     events_processed: int,
     rejection_reasons: Counter,
-    normalized_events: list[_NormalizedReplayEvent],
+    event_timestamps: tuple[str, ...],
+    capture_timestamps: bool,
 ) -> ReplayResult:
-    strategy_rows = _read_csv_rows(output_dir / "strategy.csv")
-    risk_rows = _read_csv_rows(output_dir / "risk.csv")
-    execution_rows = _read_csv_rows(output_dir / "execution.csv")
-    position_rows = _read_csv_rows(output_dir / "positions.csv")
-    account_rows = _read_csv_rows(output_dir / "account_state.csv")
-    trade_rows = _read_csv_rows(output_dir / "trade_ledger.csv")
+    strategy_summary = _summarize_csv(output_dir / "strategy.csv", capture_timestamps=capture_timestamps)
+    risk_summary = _summarize_csv(output_dir / "risk.csv", capture_timestamps=capture_timestamps)
+    execution_summary = _summarize_csv(output_dir / "execution.csv", capture_timestamps=capture_timestamps)
+    position_summary = _summarize_csv(output_dir / "positions.csv", capture_timestamps=capture_timestamps)
+    account_summary = _summarize_csv(output_dir / "account_state.csv", capture_timestamps=capture_timestamps)
+    trade_summary = _summarize_csv(output_dir / "trade_ledger.csv", capture_timestamps=capture_timestamps)
 
-    final_account = account_rows[-1] if account_rows else {}
-
-    if events_total == 0:
-        dataset_status = "EMPTY_VALID_DATASET"
-        canonicalization_result = "NOT_APPLICABLE"
-    elif events_processed == 0:
-        dataset_status = "REJECTED"
-        canonicalization_result = "REJECTED"
-    else:
-        dataset_status = "CANONICALIZED"
-        canonicalization_result = "SUCCESS"
+    final_account = account_summary.last_row
+    dataset_status, canonicalization_result = _classify_dataset_status(events_total, events_processed)
 
     return ReplayResult(
         events_total=events_total,
         events_processed=events_processed,
         events_rejected=events_total - events_processed,
         rejection_reasons=tuple(sorted(rejection_reasons.items())),
-        strategy_decisions=len(strategy_rows),
-        risk_decisions=len(risk_rows),
-        execution_events=len(execution_rows),
-        position_events=len(position_rows),
-        closed_trade_count=len(trade_rows),
+        strategy_decisions=strategy_summary.row_count,
+        risk_decisions=risk_summary.row_count,
+        execution_events=execution_summary.row_count,
+        position_events=position_summary.row_count,
+        closed_trade_count=trade_summary.row_count,
         final_account_balance=_to_float(final_account.get("available_balance")),
         final_equity=_to_float(final_account.get("equity")),
         realized_pnl=_to_float(final_account.get("realized_pnl")),
-        event_timestamps=tuple(event.event_time_utc for event in normalized_events),
-        strategy_timestamps=tuple(_csv_column(strategy_rows, "timestamp_utc")),
-        risk_timestamps=tuple(_csv_column(risk_rows, "timestamp_utc")),
-        execution_timestamps=tuple(_csv_column(execution_rows, "timestamp_utc")),
-        position_timestamps=tuple(_csv_column(position_rows, "timestamp_utc")),
-        account_timestamps=tuple(_csv_column(account_rows, "timestamp_utc")),
-        trade_timestamps=tuple(_csv_column(trade_rows, "timestamp_utc")),
+        event_timestamps=event_timestamps,
+        strategy_timestamps=strategy_summary.timestamps,
+        risk_timestamps=risk_summary.timestamps,
+        execution_timestamps=execution_summary.timestamps,
+        position_timestamps=position_summary.timestamps,
+        account_timestamps=account_summary.timestamps,
+        trade_timestamps=trade_summary.timestamps,
         dataset_status=dataset_status,
         canonicalization_result=canonicalization_result,
     )
 
 
-def _read_csv_rows(path: Path) -> list[dict]:
+def _summarize_csv(path: Path, *, capture_timestamps: bool) -> _CsvSummary:
     if not path.exists():
-        return []
+        return _CsvSummary(row_count=0, timestamps=(), last_row={})
+
+    row_count = 0
+    timestamps: list[str] = []
+    last_row: dict[str, str] = {}
     with path.open("r", encoding="utf-8", newline="") as handle:
-        return list(csv.DictReader(handle))
+        for row in csv.DictReader(handle):
+            row_count += 1
+            last_row = row
+            if capture_timestamps:
+                timestamp = row.get("timestamp_utc")
+                if timestamp:
+                    timestamps.append(timestamp)
+    return _CsvSummary(row_count=row_count, timestamps=tuple(timestamps), last_row=last_row)
 
 
-def _csv_column(rows: list[dict], column: str) -> list[str]:
-    values = []
-    for row in rows:
-        value = row.get(column)
-        if value:
-            values.append(value)
-    return values
+def _classify_dataset_status(events_total: int, events_processed: int) -> tuple[str, str]:
+    if events_total == 0:
+        return "EMPTY_VALID_DATASET", "NOT_APPLICABLE"
+    if events_processed == 0:
+        return "REJECTED", "REJECTED"
+    return "CANONICALIZED", "SUCCESS"
 
 
 def _parse_event_time_utc(raw: object) -> datetime | None:

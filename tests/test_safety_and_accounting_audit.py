@@ -196,6 +196,27 @@ class SafetyAndAccountingAuditTests(unittest.TestCase):
             tick_interval_ms=tick_interval_ms,
         )
 
+    def _strategy_input(self, tick_interval_ms: float = 10.0, spread_pct: float = 0.01) -> StrategyInput:
+        return StrategyInput(
+            timestamp_utc="2026-09-06T00:00:00+00:00",
+            market="BTC-EUR",
+            bid=100.0,
+            ask=101.0,
+            last=100.5,
+            spread_abs=1.0,
+            spread_pct=spread_pct,
+            mid_price=100.5,
+            micro_return_1=0.01,
+            micro_return_5=0.01,
+            spread_change_1=0.0,
+            spread_change_5=0.0,
+            tick_interval_ms=tick_interval_ms,
+        )
+
+    def _csv_rows(self, name: str) -> list[list[str]]:
+        with open(self._file(name), "r", encoding="utf-8", newline="") as handle:
+            return list(csv.reader(handle))
+
     def _no_trade_decision(self):
         return StrategyDecision(
             timestamp_utc="2026-09-06T00:00:00+00:00",
@@ -598,6 +619,59 @@ class SafetyAndAccountingAuditTests(unittest.TestCase):
         self.assertEqual(decision.action, "CANDIDATE_TRADE")
         self.assertEqual(decision.reason, "momentum_positive_and_spread_acceptable")
 
+    def test_strategy_buffered_persistence_preserves_decisions_and_csv_rows(self):
+        immediate = StrategyEngine(output_path=self._file("strategy_immediate.csv"), logger=self.logger)
+        buffered = StrategyEngine(
+            output_path=self._file("strategy_buffered.csv"),
+            logger=self.logger,
+            persistence_batch_size=3,
+        )
+        event_times = [
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:00:01+00:00",
+            "2026-01-01T00:00:02+00:00",
+        ]
+
+        immediate_decisions = [
+            immediate.evaluate(self._strategy_input(), event_time_utc=event_time_utc)
+            for event_time_utc in event_times
+        ]
+        buffered_decisions = [
+            buffered.evaluate(self._strategy_input(), event_time_utc=event_time_utc)
+            for event_time_utc in event_times
+        ]
+        immediate.close()
+        buffered.close()
+
+        self.assertEqual(immediate_decisions, buffered_decisions)
+        self.assertEqual(self._csv_rows("strategy_immediate.csv"), self._csv_rows("strategy_buffered.csv"))
+
+    def test_strategy_buffered_close_flushes_all_pending_rows(self):
+        engine = StrategyEngine(
+            output_path=self._file("strategy_buffered_flush.csv"),
+            logger=self.logger,
+            persistence_batch_size=10,
+        )
+        event_times = [
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:00:01+00:00",
+            "2026-01-01T00:00:02+00:00",
+        ]
+
+        for event_time_utc in event_times:
+            engine.evaluate(self._strategy_input(), event_time_utc=event_time_utc)
+
+        self.assertEqual(len(self._csv_rows("strategy_buffered_flush.csv")), 1)
+        engine.close()
+        self.assertEqual(len(self._csv_rows("strategy_buffered_flush.csv")), 1 + len(event_times))
+
+    def test_strategy_default_non_buffered_persistence_still_writes_immediately(self):
+        engine = StrategyEngine(output_path=self._file("strategy_default.csv"), logger=self.logger)
+
+        engine.evaluate(self._strategy_input(), event_time_utc="2026-01-01T00:00:00+00:00")
+
+        self.assertEqual(len(self._csv_rows("strategy_default.csv")), 2)
+
     def test_risk_engine_emergency_stop_overrides_candidate(self):
         engine = RiskEngine(
             output_path=self._file("risk.csv"),
@@ -710,6 +784,41 @@ class SafetyAndAccountingAuditTests(unittest.TestCase):
         decision = engine.evaluate(self._candidate_decision())
 
         self.assertIsNotNone(datetime.fromisoformat(decision.timestamp_utc.replace("Z", "+00:00")))
+
+    def test_risk_buffered_persistence_preserves_decisions_and_csv_rows(self):
+        immediate = RiskEngine(output_path=self._file("risk_immediate.csv"), logger=self.logger, enabled=True)
+        buffered = RiskEngine(
+            output_path=self._file("risk_buffered.csv"),
+            logger=self.logger,
+            enabled=True,
+            persistence_batch_size=3,
+        )
+        event_times = [
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:01:01+00:00",
+            "2026-01-01T00:02:02+00:00",
+        ]
+
+        immediate_decisions = [
+            immediate.evaluate(self._candidate_decision(), event_time_utc=event_time_utc)
+            for event_time_utc in event_times
+        ]
+        buffered_decisions = [
+            buffered.evaluate(self._candidate_decision(), event_time_utc=event_time_utc)
+            for event_time_utc in event_times
+        ]
+        immediate.close()
+        buffered.close()
+
+        self.assertEqual(immediate_decisions, buffered_decisions)
+        self.assertEqual(self._csv_rows("risk_immediate.csv"), self._csv_rows("risk_buffered.csv"))
+
+    def test_risk_default_non_buffered_persistence_still_writes_immediately(self):
+        engine = RiskEngine(output_path=self._file("risk_default.csv"), logger=self.logger, enabled=True)
+
+        engine.evaluate(self._candidate_decision(), event_time_utc="2026-01-01T00:00:00+00:00")
+
+        self.assertEqual(len(self._csv_rows("risk_default.csv")), 2)
 
     def test_execution_engine_uses_risk_override(self):
         engine = ExecutionEngine(output_path=self._file("execution.csv"), logger=self.logger, enabled=True)
