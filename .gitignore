@@ -51,6 +51,18 @@ logs/
 reports/
 data/*.csv
 data/**/*.csv
+data/**/*.csv.gz
+data/**/*.jsonl
+data/**/*.zip
+data/**/*.gz
+data/raw/
+data/canonical/
+data/tmp_tardis/
+*.csv.gz
+*.jsonl
+*.zip
+*.gz
+.tmp_*
 
 # Local databases and large binary artifacts
 *.db
