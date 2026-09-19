@@ -18,6 +18,21 @@ def _iso(s: str) -> str:
     return s
 
 
+def test_tardis_microsecond_epoch_timestamp_parses_as_utc(tmp_path):
+    quotes = tmp_path / "quotes.csv"
+    quotes.write_text(
+        "exchange,symbol,timestamp,local_timestamp,ask_amount,ask_price,bid_price,bid_amount\n"
+        "binance-jersey,BTCEUR,1575158401877520,1575158401877520,0.021232,6882.44,6863.4,0.001223\n",
+        encoding="utf-8",
+    )
+    records = list(__import__("tools.hsra.reader", fromlist=["iter_quotes"]).iter_quotes(quotes))
+    assert len(records) == 1
+    assert records[0].ts == datetime(2019, 12, 1, 0, 0, 1, 877520, tzinfo=timezone.utc)
+    assert records[0].market == "BTC-EUR"
+    assert records[0].bid == 6863.4
+    assert records[0].ask == 6882.44
+
+
 def test_complete_window_canonicalizes(tmp_path):
     quotes = tmp_path / "quotes.csv"
     trades = tmp_path / "trades.csv"
