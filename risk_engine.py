@@ -240,7 +240,7 @@ class RiskEngine:
                 )
             )
 
-        if strategy_decision.action != "CANDIDATE_TRADE":
+        if strategy_decision.action not in {"CANDIDATE_TRADE", "ENTRY_LONG", "EXIT_LONG"}:
             return self._persist(
                 RiskDecision(
                     timestamp_utc=now.isoformat(),

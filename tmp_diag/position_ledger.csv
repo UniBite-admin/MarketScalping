@@ -1,0 +1,1 @@
+timestamp_utc,market,position_id,lifecycle_action,status,hold_events,entry_time_utc,close_time_utc,entry_reason,exit_reason,entry_signal_strength,entry_spread_pct,exit_signal_strength,exit_spread_pct

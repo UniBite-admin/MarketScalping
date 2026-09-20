@@ -5,8 +5,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import backtest_engine as backtest_module
+from accounting_engine import AccountingDecision, ClosedTrade
 from backtest_engine import BacktestEngine, BacktestConfig
 from feature_signal_engine import FeatureSignalEngine
+from risk_engine import RiskDecision
 
 
 class BacktestEngineTests(unittest.TestCase):
@@ -198,6 +200,260 @@ class BacktestEngineTests(unittest.TestCase):
         result = BacktestEngine(cfg).run(self._fixture_events())
         self.assertEqual(result.final_cash, 10.0)
 
+    def test_backtest_passes_protected_exit_in_notional_units(self):
+        observed = {}
+        original_evaluate = backtest_module.RiskEngine.evaluate
+
+        def recording_evaluate(self, strategy_decision, event_time_utc=None, **kwargs):
+            observed["candidate_entry_notional"] = kwargs["candidate_entry_notional"]
+            observed["protected_exit_value"] = kwargs["protected_exit_value"]
+            return original_evaluate(self, strategy_decision, event_time_utc=event_time_utc, **kwargs)
+
+        events = [{
+            "event_time_utc": "2025-01-01T12:00:00Z",
+            "event_type": "ticker",
+            "market": "BTC-EUR",
+            "bid": 100.0,
+            "ask": 101.0,
+            "last": 100.0,
+        }]
+
+        original_strategy = backtest_module.StrategyEngine.evaluate
+
+        def forced_candidate(self, strategy_input, event_time_utc=None):
+            return backtest_module.StrategyDecision(
+                timestamp_utc=event_time_utc or "2025-01-01T12:00:00Z",
+                market=strategy_input.market,
+                action="CANDIDATE_TRADE",
+                reason="unit_test_candidate",
+                signal_strength=1.0,
+                spread_pct=strategy_input.spread_pct,
+                micro_return_1=0.01,
+                micro_return_5=0.01,
+                tick_interval_ms=1000.0,
+            )
+
+        with patch("backtest_engine.StrategyEngine.evaluate", new=forced_candidate):
+            with patch("backtest_engine.RiskEngine.evaluate", new=recording_evaluate):
+                BacktestEngine(BacktestConfig(initial_capital=1000.0, fee_rate=0.001, spread_pct=0.001)).run(
+                    events,
+                    assume_canonical_chronological=True,
+                )
+
+        self.assertIn("candidate_entry_notional", observed)
+        self.assertIn("protected_exit_value", observed)
+        self.assertLess(observed["protected_exit_value"], observed["candidate_entry_notional"])
+        self.assertAlmostEqual(
+            observed["protected_exit_value"],
+            observed["candidate_entry_notional"] * (1.0 - 0.001),
+            places=8,
+        )
+
+    def test_backtest_accepts_closed_trade_only_via_accounting_decision_contract(self):
+        events = [
+            {
+                "event_time_utc": "2025-01-01T12:00:00Z",
+                "event_type": "ticker",
+                "market": "BTC-EUR",
+                "bid": 100.0,
+                "ask": 101.0,
+                "last": 100.0,
+            },
+            {
+                "event_time_utc": "2025-01-01T12:00:01Z",
+                "event_type": "ticker",
+                "market": "BTC-EUR",
+                "bid": 102.0,
+                "ask": 103.0,
+                "last": 102.0,
+            },
+        ]
+
+        def forced_candidate(self, strategy_input, event_time_utc=None):
+            return backtest_module.StrategyDecision(
+                timestamp_utc=event_time_utc or "2025-01-01T12:00:00Z",
+                market=strategy_input.market,
+                action="CANDIDATE_TRADE",
+                reason="unit_test_candidate",
+                signal_strength=1.0,
+                spread_pct=strategy_input.spread_pct,
+                micro_return_1=0.01,
+                micro_return_5=0.01,
+                tick_interval_ms=1000.0,
+            )
+
+        def forced_risk(self, strategy_decision, event_time_utc=None, **kwargs):
+            return RiskDecision(
+                timestamp_utc=event_time_utc or "2025-01-01T12:00:00Z",
+                market=strategy_decision.market,
+                strategy_action=strategy_decision.action,
+                risk_action="TARGET",
+                approved=True,
+                reason="approved",
+                signal_strength=strategy_decision.signal_strength,
+                spread_pct=strategy_decision.spread_pct,
+                tick_interval_ms=strategy_decision.tick_interval_ms,
+                candidates_last_minute=1,
+            )
+
+        original_process_execution = backtest_module.AccountingEngine.process_execution
+
+        def contract_aware_process_execution(self, execution_event, bid, ask, timestamp_utc=None, signal=None, confidence=None):
+            if getattr(self, "open_position", None) is None:
+                created = original_process_execution(
+                    self,
+                    execution_event,
+                    bid=bid,
+                    ask=ask,
+                    timestamp_utc=timestamp_utc,
+                    signal=signal,
+                    confidence=confidence,
+                )
+                return created
+
+            self.last_decision = AccountingDecision(
+                status="ACCEPTED",
+                execution_event_id=getattr(execution_event, "execution_event_id", None),
+                execution_action=getattr(execution_event, "execution_action", None),
+                reason="accepted_close_contract",
+                financial_effect_applied=True,
+                market=getattr(execution_event, "market", None),
+                signal_strength=getattr(execution_event, "signal_strength", None),
+                spread_pct=getattr(execution_event, "spread_pct", None),
+            )
+            return ClosedTrade(
+                trade_id="TRD-000001",
+                timestamp_utc=timestamp_utc or "2025-01-01T12:00:01Z",
+                symbol="BTC-EUR",
+                side="LONG",
+                entry_price=100.0,
+                exit_price=102.0,
+                position_size=1.0,
+                gross_pnl=2.0,
+                fees=0.0,
+                slippage=0.0,
+                net_pnl=2.0,
+                holding_time_seconds=1.0,
+                strategy="backtest_contract_repro",
+                signal="contract_close",
+                confidence=1.0,
+                close_reason="accepted_close_contract",
+                entry_timestamp_utc="2025-01-01T12:00:00Z",
+                exit_timestamp_utc=timestamp_utc or "2025-01-01T12:00:01Z",
+            )
+
+        with patch("backtest_engine.StrategyEngine.evaluate", new=forced_candidate):
+            with patch("backtest_engine.RiskEngine.evaluate", new=forced_risk):
+                with patch.object(backtest_module.AccountingEngine, "process_execution", new=contract_aware_process_execution):
+                    result = BacktestEngine(BacktestConfig(initial_capital=1000.0, fee_rate=0.001, spread_pct=0.001)).run(
+                        events,
+                        assume_canonical_chronological=True,
+                    )
+
+        self.assertEqual(result.validation_status, "PASS")
+        self.assertTrue(result.accounting_decisions)
+        self.assertEqual(result.accounting_decisions[-1]["status"], "ACCEPTED")
+        self.assertTrue(result.accounting_decisions[-1]["financial_effect_applied"])
+
+    def test_risk_engine_rejects_invalid_protected_exit_notional(self):
+        risk = backtest_module.RiskEngine(
+            tempfile.NamedTemporaryFile(delete=False).name,
+            __import__("logging").getLogger("risk_test"),
+            enabled=True,
+            max_spread_pct=0.02,
+            max_tick_interval_ms=2000.0,
+            max_candidates_per_minute=120,
+            max_position_size=1000.0,
+            max_exposure=2000.0,
+            max_risk_per_trade=250.0,
+        )
+        decision = backtest_module.StrategyDecision(
+            timestamp_utc="2025-01-01T12:00:00Z",
+            market="BTC-EUR",
+            action="CANDIDATE_TRADE",
+            reason="unit_test_candidate",
+            signal_strength=1.0,
+            spread_pct=0.001,
+            micro_return_1=0.01,
+            micro_return_5=0.01,
+            tick_interval_ms=1000.0,
+        )
+        risk_state = backtest_module.RiskState(
+            available_balance=1000.0,
+            equity=1000.0,
+            realized_pnl=0.0,
+            unrealized_pnl=0.0,
+            open_position_exists=False,
+            open_position_side=None,
+            open_position_size=None,
+            open_position_entry_price=None,
+            current_drawdown=0.0,
+            maximum_drawdown=0.0,
+            recovery_status="VALID",
+            financial_valid=True,
+            is_valid=True,
+        )
+        result = risk.evaluate(
+            decision,
+            event_time_utc="2025-01-01T12:00:00Z",
+            risk_state=risk_state,
+            candidate_position_size=0.1,
+            candidate_entry_notional=250.0,
+            protected_exit_value=300.0,
+        )
+        self.assertFalse(result.approved)
+        self.assertIn("invalid_protected_exit_value", result.reason)
+
+    def test_risk_engine_accepts_valid_protected_exit_notional(self):
+        risk = backtest_module.RiskEngine(
+            tempfile.NamedTemporaryFile(delete=False).name,
+            __import__("logging").getLogger("risk_test"),
+            enabled=True,
+            max_spread_pct=0.02,
+            max_tick_interval_ms=2000.0,
+            max_candidates_per_minute=120,
+            max_position_size=1000.0,
+            max_exposure=2000.0,
+            max_risk_per_trade=250.0,
+        )
+        decision = backtest_module.StrategyDecision(
+            timestamp_utc="2025-01-01T12:00:00Z",
+            market="BTC-EUR",
+            action="CANDIDATE_TRADE",
+            reason="unit_test_candidate",
+            signal_strength=1.0,
+            spread_pct=0.001,
+            micro_return_1=0.01,
+            micro_return_5=0.01,
+            tick_interval_ms=1000.0,
+        )
+        risk_state = backtest_module.RiskState(
+            available_balance=1000.0,
+            equity=1000.0,
+            realized_pnl=0.0,
+            unrealized_pnl=0.0,
+            open_position_exists=False,
+            open_position_side=None,
+            open_position_size=None,
+            open_position_entry_price=None,
+            current_drawdown=0.0,
+            maximum_drawdown=0.0,
+            recovery_status="VALID",
+            financial_valid=True,
+            is_valid=True,
+        )
+        protected_exit_value = 250.0 * (1.0 - 0.001)
+        result = risk.evaluate(
+            decision,
+            event_time_utc="2025-01-01T12:00:00Z",
+            risk_state=risk_state,
+            candidate_position_size=0.1,
+            candidate_entry_notional=250.0,
+            protected_exit_value=protected_exit_value,
+        )
+        self.assertTrue(result.approved)
+        self.assertEqual(result.reason, "risk_checks_passed")
+
     def test_accepted_execution_has_single_effect(self):
         result = BacktestEngine(BacktestConfig()).run(self._fixture_events())
         self.assertIsInstance(result.trade_records, list)
@@ -300,6 +556,43 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertIn("fees", trade)
         self.assertIn("slippage_impact", trade)
         self.assertIn("spread_impact", trade)
+
+    def test_backtest_trade_net_pnl_uses_accounting_canonical_formula(self):
+        engine = BacktestEngine(BacktestConfig(initial_capital=1000.0, fee_rate=0.001, spread_pct=0.001, slippage_bps=100.0))
+        state = backtest_module.BacktestState(cash=1000.0)
+        state.current_equity = 1000.0
+        state.peak_equity = 1000.0
+
+        buy = engine.execution_model.simulate(
+            side="BUY",
+            reference_price=100.0,
+            order_quantity=1.0,
+            event_time_utc="2025-01-01T12:00:00Z",
+            available_cash=1000.0,
+            position_quantity=0.0,
+            observed_bid=99.0,
+            observed_ask=101.0,
+        )
+        sell = engine.execution_model.simulate(
+            side="SELL",
+            reference_price=110.0,
+            order_quantity=1.0,
+            event_time_utc="2025-01-01T12:00:01Z",
+            available_cash=1000.0,
+            position_quantity=1.0,
+            observed_bid=109.0,
+            observed_ask=111.0,
+        )
+
+        engine._apply_outcome(state, buy, type("Evt", (), {"event_time_utc": "2025-01-01T12:00:00Z"})(), 0)
+        engine._apply_outcome(state, sell, type("Evt", (), {"event_time_utc": "2025-01-01T12:00:01Z"})(), 1)
+
+        self.assertTrue(state.closed_trades)
+        trade = state.closed_trades[0]
+        self.assertAlmostEqual(trade["net_pnl"], trade["gross_pnl"] - trade["fees"], places=10)
+        self.assertAlmostEqual(trade["slippage"], sell.slippage_impact, places=10)
+        self.assertGreater(sell.slippage_impact, 0.0)
+        self.assertGreater(sell.spread_impact, 0.0)
 
     def test_step_8_4_equity_curve_is_chronological(self):
         result = BacktestEngine(BacktestConfig()).run(self._fixture_events())

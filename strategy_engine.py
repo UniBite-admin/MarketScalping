@@ -80,7 +80,13 @@ class StrategyEngine:
 
             self.logger.info("strategy_output_initialized path=%s", self.output_path)
 
-    def evaluate(self, strategy_input: StrategyInput, event_time_utc: str | None = None) -> StrategyDecision:
+    def evaluate(
+        self,
+        strategy_input: StrategyInput,
+        event_time_utc: str | None = None,
+        position_state: dict | object | None = None,
+        exit_condition: bool | None = None,
+    ) -> StrategyDecision:
         decision_time = _resolve_event_time(event_time_utc)
         if decision_time is None and event_time_utc is not None:
             decision = self._build_decision(
@@ -94,6 +100,14 @@ class StrategyEngine:
             return decision
 
         resolved_time_utc = decision_time.isoformat() if decision_time is not None else None
+
+        if position_state is not None:
+            return self._evaluate_position_aware(
+                strategy_input,
+                position_state=position_state,
+                exit_condition=exit_condition,
+                decision_time_utc=resolved_time_utc,
+            )
 
         momentum_ready = strategy_input.micro_return_1 is not None and strategy_input.micro_return_5 is not None
         fresh_tick = (
@@ -143,6 +157,114 @@ class StrategyEngine:
 
         self._persist_decision(decision)
         return decision
+
+    def _evaluate_position_aware(
+        self,
+        strategy_input: StrategyInput,
+        *,
+        position_state: dict | object | None,
+        exit_condition: bool | None,
+        decision_time_utc: str | None,
+    ) -> StrategyDecision:
+        normalized = self._normalize_position_state(position_state)
+        if normalized is None:
+            decision = self._build_decision(
+                strategy_input,
+                action="NO_TRADE",
+                reason="invalid_position_state",
+                signal_strength=0.0,
+                decision_time_utc=decision_time_utc,
+            )
+            self._persist_decision(decision)
+            return decision
+
+        if normalized.get("open_position_exists") is True:
+            if bool(exit_condition) or bool(normalized.get("exit_condition")):
+                decision = self._build_decision(
+                    strategy_input,
+                    action="EXIT_LONG",
+                    reason="exit_condition_satisfied",
+                    signal_strength=self._momentum_score(strategy_input),
+                    decision_time_utc=decision_time_utc,
+                )
+                self._persist_decision(decision)
+                return decision
+
+            decision = self._build_decision(
+                strategy_input,
+                action="NO_TRADE",
+                reason="no_exit_condition",
+                signal_strength=self._momentum_score(strategy_input),
+                decision_time_utc=decision_time_utc,
+            )
+            self._persist_decision(decision)
+            return decision
+
+        if normalized.get("open_position_exists") is False:
+            momentum_ready = strategy_input.micro_return_1 is not None and strategy_input.micro_return_5 is not None
+            fresh_tick = (
+                strategy_input.tick_interval_ms is not None
+                and strategy_input.tick_interval_ms <= self.max_tick_interval_ms
+            )
+            spread_ok = strategy_input.spread_pct <= self.max_spread_pct
+            momentum_score = self._momentum_score(strategy_input)
+            bullish_momentum = momentum_score >= self.min_momentum_return
+
+            if momentum_ready and spread_ok and fresh_tick and bullish_momentum:
+                decision = self._build_decision(
+                    strategy_input,
+                    action="ENTRY_LONG",
+                    reason="entry_condition_satisfied",
+                    signal_strength=momentum_score,
+                    decision_time_utc=decision_time_utc,
+                )
+                self._persist_decision(decision)
+                return decision
+
+            decision = self._build_decision(
+                strategy_input,
+                action="NO_TRADE",
+                reason="no_entry_condition",
+                signal_strength=momentum_score,
+                decision_time_utc=decision_time_utc,
+            )
+            self._persist_decision(decision)
+            return decision
+
+        decision = self._build_decision(
+            strategy_input,
+            action="NO_TRADE",
+            reason="invalid_position_state",
+            signal_strength=0.0,
+            decision_time_utc=decision_time_utc,
+        )
+        self._persist_decision(decision)
+        return decision
+
+    def _normalize_position_state(self, position_state: dict | object | None) -> dict | None:
+        if position_state is None:
+            return None
+
+        if isinstance(position_state, dict):
+            values = position_state
+        else:
+            try:
+                values = vars(position_state)
+            except TypeError:
+                return None
+
+        if not isinstance(values, dict):
+            return None
+
+        open_position_exists = values.get("open_position_exists")
+        if not isinstance(open_position_exists, bool):
+            return None
+
+        return {
+            "open_position_exists": open_position_exists,
+            "exit_condition": bool(values.get("exit_condition", False)),
+            "entry_condition": bool(values.get("entry_condition", False)),
+        }
 
     def _momentum_score(self, strategy_input: StrategyInput) -> float:
         # Weighted short-horizon momentum score for deterministic baseline decisions.

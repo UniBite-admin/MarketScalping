@@ -184,6 +184,24 @@ class AccountingBaselineTests(unittest.TestCase):
         self.assertAlmostEqual(trade.gross_pnl, expected_gross, places=10)
         self.assertAlmostEqual(trade.slippage, expected_slippage, places=10)
 
+    def test_slippage_is_attribution_not_second_ledger_deduction(self):
+        engine = self._engine(fee_rate=0.001, slippage_bps=100.0)
+        self._open(engine, ask=100.0)
+        trade = self._close(engine, bid=110.0)
+
+        entry_exec = 100.0 * 1.01
+        exit_exec = 110.0 * 0.99
+        size = 1000.0 / entry_exec
+        expected_gross = (exit_exec - entry_exec) * size
+        expected_fees = (entry_exec * size * 0.001) + (exit_exec * size * 0.001)
+        expected_slippage = ((entry_exec - 100.0) * size) + ((110.0 - exit_exec) * size)
+
+        self.assertAlmostEqual(trade.gross_pnl, expected_gross, places=10)
+        self.assertAlmostEqual(trade.fees, expected_fees, places=10)
+        self.assertAlmostEqual(trade.net_pnl, expected_gross - expected_fees, places=10)
+        self.assertAlmostEqual(trade.slippage, expected_slippage, places=10)
+        self.assertAlmostEqual(trade.gross_pnl - trade.fees, trade.net_pnl, places=10)
+
     def test_open_position_generates_unrealized_pnl(self):
         engine = self._engine(fee_rate=0.0, slippage_bps=0.0)
         self._open(engine, ask=100.0, bid=100.0)

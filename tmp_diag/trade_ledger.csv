@@ -1,0 +1,1 @@
+trade_id,timestamp_utc,symbol,side,entry_price,exit_price,position_size,gross_pnl,fees,slippage,net_pnl,holding_time_seconds,strategy,signal,confidence,close_reason,entry_timestamp_utc,exit_timestamp_utc

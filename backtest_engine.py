@@ -20,7 +20,7 @@ from feature_signal_engine import FeatureSignalEngine, StrategyInput
 from position_manager import PositionManager
 from replay_runner import _normalize_replay_event
 from risk_engine import RiskEngine, RiskState
-from strategy_engine import StrategyEngine
+from strategy_engine import StrategyDecision, StrategyEngine
 
 
 @dataclass
@@ -381,7 +381,7 @@ class BacktestEngine:
                 order_quantity = self._determine_order_quantity(current_last, state.cash, state.position_quantity)
                 candidate_position_size = max(order_quantity, 0.0)
                 candidate_entry_notional = order_quantity * current_last
-                protected_exit_value = max(current_last * (1.0 - max(self.config.spread_pct, 0.0)), 0.0)
+                protected_exit_value = max(candidate_entry_notional * (1.0 - max(self.config.spread_pct, 0.0)), 0.0)
                 risk_decision = risk_engine.evaluate(
                     strategy_decision,
                     event_time_utc=event.event_time_utc,
@@ -417,13 +417,15 @@ class BacktestEngine:
                         pending = state.pending_orders.pop(0)
                         if pending["signal"] == "NO_TRADE" or pending["signal"] == "INVALID":
                             continue
+                        pending_entry_notional = pending["order_quantity"] * pending["reference_price"]
+                        protected_exit_value = max(pending_entry_notional * (1.0 - max(self.config.spread_pct, 0.0)), 0.0)
                         risk_decision = risk_engine.evaluate(
                             strategy_decision,
                             event_time_utc=pending["observation_time"],
                             risk_state=accounting_engine.build_risk_state(),
                             candidate_position_size=max(pending["order_quantity"], 0.0),
-                            candidate_entry_notional=pending["order_quantity"] * pending["reference_price"],
-                            protected_exit_value=max(pending["reference_price"] * (1.0 - max(self.config.spread_pct, 0.0)), 0.0),
+                            candidate_entry_notional=pending_entry_notional,
+                            protected_exit_value=protected_exit_value,
                         )
                         if not risk_decision.approved:
                             continue
@@ -443,7 +445,7 @@ class BacktestEngine:
                             observed_ask=event.ask,
                         )
                         self._apply_outcome(state, outcome, event, event_index)
-                        accounting_decision = accounting_engine.process_execution(
+                        execution_result = accounting_engine.process_execution(
                             execution_event,
                             bid=event.bid,
                             ask=event.ask,
@@ -451,6 +453,7 @@ class BacktestEngine:
                             signal=strategy_decision.action,
                             confidence=strategy_decision.signal_strength,
                         )
+                        accounting_decision = getattr(accounting_engine, "last_decision", None)
                         if store_traces:
                             accounting_decisions.append(self._as_mapping(accounting_decision) if accounting_decision is not None else {"status": "REJECTED"})
                         if accounting_decision is not None and accounting_decision.financial_effect_applied:
@@ -478,7 +481,7 @@ class BacktestEngine:
                         observed_ask=event.ask,
                     )
                     self._apply_outcome(state, outcome, event, event_index)
-                    accounting_decision = accounting_engine.process_execution(
+                    execution_result = accounting_engine.process_execution(
                         execution_event,
                         bid=event.bid,
                         ask=event.ask,
@@ -486,6 +489,7 @@ class BacktestEngine:
                         signal=strategy_decision.action,
                         confidence=strategy_decision.signal_strength,
                     )
+                    accounting_decision = getattr(accounting_engine, "last_decision", None)
                     if store_traces:
                         accounting_decisions.append(self._as_mapping(accounting_decision) if accounting_decision is not None else {"status": "REJECTED"})
                     if accounting_decision is not None and accounting_decision.financial_effect_applied:
@@ -804,7 +808,7 @@ class BacktestEngine:
         state.approved_executions += 1
         if outcome.side == "BUY":
             quantity = outcome.fill_quantity
-            cost = outcome.notional + outcome.fees + outcome.slippage_impact
+            cost = outcome.notional + outcome.fees
             state.cash -= cost
             state.position_quantity += quantity
             if state.position_side is None:
@@ -815,7 +819,7 @@ class BacktestEngine:
                 state.entry_price = outcome.execution_price
         elif outcome.side == "SELL":
             quantity = outcome.fill_quantity
-            proceeds = outcome.notional - outcome.fees - outcome.slippage_impact
+            proceeds = outcome.notional - outcome.fees
             state.cash += proceeds
             state.position_quantity -= quantity
             if state.position_side is None:
@@ -824,7 +828,8 @@ class BacktestEngine:
                 state.position_side = "SELL"
             if state.position_quantity <= 0:
                 realized = (outcome.execution_price - (state.entry_price or outcome.execution_price)) * quantity
-                state.realized_pnl += realized
+                net_pnl = realized - outcome.fees
+                state.realized_pnl += net_pnl
                 state.closed_trades.append(
                     {
                         "trade_id": f"trade-{len(state.closed_trades)+1}",
@@ -837,7 +842,8 @@ class BacktestEngine:
                         "gross_pnl": realized,
                         "fees": outcome.fees,
                         "slippage": outcome.slippage_impact,
-                        "net_pnl": realized - outcome.fees - outcome.slippage_impact,
+                        "spread_impact": outcome.spread_impact,
+                        "net_pnl": net_pnl,
                         "holding_time_seconds": 0.0,
                         "status": "CLOSED",
                     }

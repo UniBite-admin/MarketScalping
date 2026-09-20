@@ -619,6 +619,178 @@ class SafetyAndAccountingAuditTests(unittest.TestCase):
         self.assertEqual(decision.action, "CANDIDATE_TRADE")
         self.assertEqual(decision.reason, "momentum_positive_and_spread_acceptable")
 
+    def test_strategy_entry_long_on_flat_position_with_valid_entry_signal(self):
+        engine = StrategyEngine(
+            output_path=self._file("strategy_entry.csv"),
+            logger=self.logger,
+            max_spread_pct=0.02,
+            max_tick_interval_ms=1000.0,
+            min_momentum_return=0.0,
+        )
+
+        strategy_input = StrategyInput(
+            timestamp_utc="2026-09-06T00:00:00+00:00",
+            market="BTC-EUR",
+            bid=100.0,
+            ask=101.0,
+            last=100.5,
+            spread_abs=1.0,
+            spread_pct=0.01,
+            mid_price=100.5,
+            micro_return_1=0.01,
+            micro_return_5=0.01,
+            spread_change_1=0.0,
+            spread_change_5=0.0,
+            tick_interval_ms=10.0,
+        )
+
+        decision = engine.evaluate(strategy_input, position_state={"open_position_exists": False})
+        self.assertEqual(decision.action, "ENTRY_LONG")
+        self.assertEqual(decision.reason, "entry_condition_satisfied")
+
+    def test_strategy_no_trade_on_flat_position_when_entry_guardrails_fail(self):
+        engine = StrategyEngine(
+            output_path=self._file("strategy_no_entry.csv"),
+            logger=self.logger,
+            max_spread_pct=0.02,
+            max_tick_interval_ms=1000.0,
+            min_momentum_return=0.0,
+        )
+
+        strategy_input = StrategyInput(
+            timestamp_utc="2026-09-06T00:00:00+00:00",
+            market="BTC-EUR",
+            bid=100.0,
+            ask=101.0,
+            last=100.5,
+            spread_abs=1.0,
+            spread_pct=0.05,
+            mid_price=100.5,
+            micro_return_1=0.01,
+            micro_return_5=0.01,
+            spread_change_1=0.0,
+            spread_change_5=0.0,
+            tick_interval_ms=10.0,
+        )
+
+        decision = engine.evaluate(strategy_input, position_state={"open_position_exists": False})
+        self.assertEqual(decision.action, "NO_TRADE")
+        self.assertIn("no_entry_condition", decision.reason)
+
+    def test_strategy_no_exit_when_open_position_without_explicit_exit_trigger(self):
+        engine = StrategyEngine(
+            output_path=self._file("strategy_no_exit.csv"),
+            logger=self.logger,
+            max_spread_pct=0.02,
+            max_tick_interval_ms=1000.0,
+            min_momentum_return=0.0,
+        )
+
+        strategy_input = StrategyInput(
+            timestamp_utc="2026-09-06T00:00:00+00:00",
+            market="BTC-EUR",
+            bid=100.0,
+            ask=101.0,
+            last=100.5,
+            spread_abs=1.0,
+            spread_pct=0.01,
+            mid_price=100.5,
+            micro_return_1=0.01,
+            micro_return_5=0.01,
+            spread_change_1=0.0,
+            spread_change_5=0.0,
+            tick_interval_ms=10.0,
+        )
+
+        decision = engine.evaluate(strategy_input, position_state={"open_position_exists": True, "exit_condition": False})
+        self.assertEqual(decision.action, "NO_TRADE")
+        self.assertEqual(decision.reason, "no_exit_condition")
+
+    def test_strategy_open_position_never_emits_entry_long(self):
+        engine = StrategyEngine(
+            output_path=self._file("strategy_open_never_entry.csv"),
+            logger=self.logger,
+            max_spread_pct=0.02,
+            max_tick_interval_ms=1000.0,
+            min_momentum_return=0.0,
+        )
+
+        strategy_input = StrategyInput(
+            timestamp_utc="2026-09-06T00:00:00+00:00",
+            market="BTC-EUR",
+            bid=100.0,
+            ask=101.0,
+            last=100.5,
+            spread_abs=1.0,
+            spread_pct=0.01,
+            mid_price=100.5,
+            micro_return_1=0.01,
+            micro_return_5=0.01,
+            spread_change_1=0.0,
+            spread_change_5=0.0,
+            tick_interval_ms=10.0,
+        )
+
+        decision = engine.evaluate(strategy_input, position_state={"open_position_exists": True, "exit_condition": False})
+        self.assertNotEqual(decision.action, "ENTRY_LONG")
+
+    def test_strategy_flat_never_emits_exit_long(self):
+        engine = StrategyEngine(
+            output_path=self._file("strategy_flat_never_exit.csv"),
+            logger=self.logger,
+            max_spread_pct=0.02,
+            max_tick_interval_ms=1000.0,
+            min_momentum_return=0.0,
+        )
+
+        strategy_input = StrategyInput(
+            timestamp_utc="2026-09-06T00:00:00+00:00",
+            market="BTC-EUR",
+            bid=100.0,
+            ask=101.0,
+            last=100.5,
+            spread_abs=1.0,
+            spread_pct=0.01,
+            mid_price=100.5,
+            micro_return_1=0.01,
+            micro_return_5=0.01,
+            spread_change_1=0.0,
+            spread_change_5=0.0,
+            tick_interval_ms=10.0,
+        )
+
+        decision = engine.evaluate(strategy_input, position_state={"open_position_exists": False})
+        self.assertNotEqual(decision.action, "EXIT_LONG")
+
+    def test_strategy_rejects_invalid_position_state(self):
+        engine = StrategyEngine(
+            output_path=self._file("strategy_invalid_state.csv"),
+            logger=self.logger,
+            max_spread_pct=0.02,
+            max_tick_interval_ms=1000.0,
+            min_momentum_return=0.0,
+        )
+
+        strategy_input = StrategyInput(
+            timestamp_utc="2026-09-06T00:00:00+00:00",
+            market="BTC-EUR",
+            bid=100.0,
+            ask=101.0,
+            last=100.5,
+            spread_abs=1.0,
+            spread_pct=0.01,
+            mid_price=100.5,
+            micro_return_1=0.01,
+            micro_return_5=0.01,
+            spread_change_1=0.0,
+            spread_change_5=0.0,
+            tick_interval_ms=10.0,
+        )
+
+        decision = engine.evaluate(strategy_input, position_state={"open_position_exists": "maybe"})
+        self.assertEqual(decision.action, "NO_TRADE")
+        self.assertEqual(decision.reason, "invalid_position_state")
+
     def test_strategy_buffered_persistence_preserves_decisions_and_csv_rows(self):
         immediate = StrategyEngine(output_path=self._file("strategy_immediate.csv"), logger=self.logger)
         buffered = StrategyEngine(
