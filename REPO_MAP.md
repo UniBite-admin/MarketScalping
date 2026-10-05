@@ -52,7 +52,8 @@
 - `.agent/agents/` — human/agent role guidance: Architect / Developer / QA / Safety agent docs.
 - `.agent/contracts/` — machine-readable contracts and step contracts (historical-data, replay, backtest, paper-session contracts).
 - `.agent/adr/` — architecture decision records (financial state, recovery, etc.).
-- `.agent/roadmap/master_roadmap.json` — planning roadmap used by `tools/roadmap_loader.py`.
+- `docs/ROADMAP.md` — AUTHORITATIVE CURRENT ROADMAP for MarketScalping. This is the current governing phase order.
+- `.agent/roadmap/master_roadmap.json` — LEGACY/HISTORICAL roadmap artifact retained for evidence only. It is not the current authority and must not be silently remapped to the current 12-phase numbering.
 - `.github/agents/` — GitHub-visible agent docs and workflows.
 
 **8. Testing**
@@ -87,7 +88,9 @@
 - The agent performing a qualifying change must update REPO_MAP.md in the same task.
 
 **12. Current Known State (verified facts only)**
-- Roadmap: `.agent/roadmap/master_roadmap.json` exists and is used by `tools/roadmap_loader.py`.
+- Current authoritative roadmap: `docs/ROADMAP.md` is the governing roadmap for the MarketScalping Candlestick + Zone Strategy project.
+- Legacy/historical roadmap: `.agent/roadmap/master_roadmap.json` remains in the repo as historical evidence only and is not current authority.
+- Historical roadmap phase labels must not be silently remapped to the current 12-phase numbering.
 - ADRs: `.agent/adr/0002-financial-state-source-of-truth.md` exists and designates AccountingEngine as ledger authority.
 - Binance adapter: `binance_trade_adapter.py` exists and has unit tests in `tests/test_binance_trade_adapter.py` (tests observed passing during inspection).
 - Bitvavo collector: `bitvavo_trade_collector.py` and `historical_dataset.py` are implemented and used for raw collection and manifest generation.

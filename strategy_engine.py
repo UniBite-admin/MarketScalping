@@ -178,12 +178,26 @@ class StrategyEngine:
             self._persist_decision(decision)
             return decision
 
-        if normalized.get("open_position_exists") is True:
-            if bool(exit_condition) or bool(normalized.get("exit_condition")):
+        open_position_exists = bool(normalized.get("open_position_exists"))
+        explicit_exit = bool(exit_condition) or bool(normalized.get("exit_condition"))
+        explicit_entry = bool(normalized.get("entry_condition"))
+
+        if open_position_exists:
+            if explicit_exit:
+                exit_reason = str(normalized.get("exit_reason") or "strategy_exit_generic")
+                if exit_reason == "max_hold":
+                    exit_reason = "strategy_exit_max_hold"
+                elif exit_reason in {"reversal", "trend_reversal"}:
+                    exit_reason = "strategy_exit_reversal"
+                elif exit_reason in {"take_profit", "profit_target"}:
+                    exit_reason = "strategy_exit_take_profit"
+                else:
+                    exit_reason = "strategy_exit_generic"
+
                 decision = self._build_decision(
                     strategy_input,
                     action="EXIT_LONG",
-                    reason="exit_condition_satisfied",
+                    reason=exit_reason,
                     signal_strength=self._momentum_score(strategy_input),
                     decision_time_utc=decision_time_utc,
                 )
@@ -200,7 +214,18 @@ class StrategyEngine:
             self._persist_decision(decision)
             return decision
 
-        if normalized.get("open_position_exists") is False:
+        if not open_position_exists:
+            if explicit_entry:
+                decision = self._build_decision(
+                    strategy_input,
+                    action="ENTRY_LONG",
+                    reason="entry_condition_satisfied",
+                    signal_strength=self._momentum_score(strategy_input),
+                    decision_time_utc=decision_time_utc,
+                )
+                self._persist_decision(decision)
+                return decision
+
             momentum_ready = strategy_input.micro_return_1 is not None and strategy_input.micro_return_5 is not None
             fresh_tick = (
                 strategy_input.tick_interval_ms is not None
@@ -260,10 +285,15 @@ class StrategyEngine:
         if not isinstance(open_position_exists, bool):
             return None
 
+        exit_reason = values.get("exit_reason")
+        entry_reason = values.get("entry_reason")
+
         return {
             "open_position_exists": open_position_exists,
             "exit_condition": bool(values.get("exit_condition", False)),
             "entry_condition": bool(values.get("entry_condition", False)),
+            "exit_reason": str(exit_reason).strip() if isinstance(exit_reason, str) and exit_reason.strip() else None,
+            "entry_reason": str(entry_reason).strip() if isinstance(entry_reason, str) and entry_reason.strip() else None,
         }
 
     def _momentum_score(self, strategy_input: StrategyInput) -> float:

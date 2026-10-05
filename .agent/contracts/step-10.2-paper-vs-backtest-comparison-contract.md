@@ -17,11 +17,26 @@ This document defines the required architecture for Step 10.2 only:
 
 This contract does not authorize Step 11 or any live-money activation path.
 
-## 2. Authoritative roadmap definition
+## 2. Roadmap authority
 
-The authoritative definition in [.agent/roadmap/master_roadmap.json](../roadmap/master_roadmap.json) is:
+The current authoritative roadmap is [../../docs/ROADMAP.md](../../docs/ROADMAP.md).
 
-> Compare paper-trading outcomes with historical backtest results and identify divergence caused by latency, spread, data quality, execution assumptions, or operational conditions. The objective is to prove the real-time operation matches the modeled assumptions before live trading is considered.
+The historical roadmap artifact in [.agent/roadmap/master_roadmap.json](../roadmap/master_roadmap.json) remains in the repository as legacy/historical evidence only and must not be treated as the current authority for the active 12-phase roadmap.
+
+The current governing phase ordering is:
+
+1. PHASE 1 — Zone Formation
+2. PHASE 2 — Touch Detection
+3. PHASE 3 — Reaction Validation
+4. PHASE 4 — Zone Lifecycle
+5. PHASE 5 — Confluence
+6. PHASE 6 — Candlestick Pattern Engine
+7. PHASE 7 — Strategy Decision Engine
+8. PHASE 8 — Multi-Asset Architecture
+9. PHASE 9 — Backtest Integration
+10. PHASE 10 — Testing & Anti-Lookahead
+11. PHASE 11 — Architect Validation
+12. PHASE 12 — Final Independent Validation
 
 The required evidence list is:
 

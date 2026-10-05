@@ -1,4 +1,5 @@
 import csv
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -563,6 +564,9 @@ class BacktestEngineTests(unittest.TestCase):
         state.current_equity = 1000.0
         state.peak_equity = 1000.0
 
+        buy_event = type("Evt", (), {"event_time_utc": "2025-01-01T12:00:00Z"})()
+        sell_event = type("Evt", (), {"event_time_utc": "2025-01-01T12:00:01Z"})()
+
         buy = engine.execution_model.simulate(
             side="BUY",
             reference_price=100.0,
@@ -584,15 +588,259 @@ class BacktestEngineTests(unittest.TestCase):
             observed_ask=111.0,
         )
 
-        engine._apply_outcome(state, buy, type("Evt", (), {"event_time_utc": "2025-01-01T12:00:00Z"})(), 0)
-        engine._apply_outcome(state, sell, type("Evt", (), {"event_time_utc": "2025-01-01T12:00:01Z"})(), 1)
+        engine._apply_outcome(
+            state,
+            buy,
+            buy_event,
+            0,
+            execution_event_id="evt-buy",
+            strategy_name="BTC-EUR",
+            signal="ENTRY_LONG",
+            confidence=0.75,
+            entry_reason="entry_condition_satisfied",
+            entry_signal_strength=0.75,
+            entry_spread_pct=0.001,
+            micro_return_1=0.01,
+            micro_return_5=0.02,
+            tick_interval_ms=1000.0,
+        )
+        engine._apply_outcome(
+            state,
+            sell,
+            sell_event,
+            1,
+            execution_event_id="evt-sell",
+            strategy_name="BTC-EUR",
+            signal="EXIT_LONG",
+            confidence=0.75,
+            close_reason="strategy_exit_max_hold",
+            entry_reason="entry_condition_satisfied",
+            entry_signal_strength=0.75,
+            entry_spread_pct=0.001,
+            micro_return_1=0.01,
+            micro_return_5=0.02,
+            tick_interval_ms=1000.0,
+        )
 
         self.assertTrue(state.closed_trades)
         trade = state.closed_trades[0]
+        self.assertEqual(trade["close_reason"], "strategy_exit_max_hold")
+        self.assertEqual(trade["holding_time_seconds"], 1.0)
         self.assertAlmostEqual(trade["net_pnl"], trade["gross_pnl"] - trade["fees"], places=10)
         self.assertAlmostEqual(trade["slippage"], sell.slippage_impact, places=10)
         self.assertGreater(sell.slippage_impact, 0.0)
         self.assertGreater(sell.spread_impact, 0.0)
+
+    def test_backtest_evidence_export_preserves_holding_time_and_exit_reason(self):
+        engine = BacktestEngine(BacktestConfig())
+        state = backtest_module.BacktestState(cash=1000.0)
+        state.current_equity = 1000.0
+        state.peak_equity = 1000.0
+        state.open_trade = {
+            "entry_timestamp_utc": "2025-01-01T12:00:00Z",
+            "entry_reason": "entry_condition_satisfied",
+            "entry_signal_strength": 0.8,
+            "entry_spread_pct": 0.001,
+            "micro_return_1": 0.01,
+            "micro_return_5": 0.02,
+            "tick_interval_ms": 1000.0,
+        }
+        state.closed_trades.append({
+            "trade_id": "trade-1",
+            "execution_event_id": "evt-1",
+            "market": "BTC-EUR",
+            "side": "SELL",
+            "entry_timestamp_utc": "2025-01-01T12:00:00Z",
+            "exit_timestamp_utc": "2025-01-01T12:00:30Z",
+            "entry_price": 100.0,
+            "exit_price": 101.0,
+            "quantity": 1.0,
+            "gross_pnl": 1.0,
+            "fees": 0.1,
+            "spread_impact": 0.05,
+            "slippage_impact": 0.02,
+            "net_pnl": 0.9,
+            "holding_time_seconds": 30.0,
+            "close_reason": "strategy_exit_max_hold",
+            "signal": "EXIT_LONG",
+            "confidence": 0.8,
+            "entry_reason": "entry_condition_satisfied",
+            "entry_signal_strength": 0.8,
+            "entry_spread_pct": 0.001,
+            "micro_return_1": 0.01,
+            "micro_return_5": 0.02,
+            "tick_interval_ms": 1000.0,
+            "status": "CLOSED",
+        })
+
+        result = backtest_module.BacktestResult(
+            run_id="run-123",
+            dataset_id="dataset-123",
+            market="BTC-EUR",
+            event_start_utc="2025-01-01T12:00:00Z",
+            event_end_utc="2025-01-01T12:00:30Z",
+            repository_revision=None,
+            strategy_configuration={},
+            risk_configuration={},
+            execution_configuration={},
+            fee_configuration={},
+            spread_configuration={},
+            slippage_configuration={},
+            latency_configuration={},
+            initial_capital=1000.0,
+            final_cash=1000.0,
+            final_position_quantity=0.0,
+            final_equity=1000.0,
+            realized_pnl=0.9,
+            trade_records=[],
+            equity_curve=[],
+            metrics={"trade_count": 1, "net_pnl": 0.9},
+            warnings=[],
+            limitations=[],
+            validation_status="PASS",
+            observed_assumptions={"backtest_evidence_dir": "reports/backtests/run-123"},
+            modeled_assumptions={},
+            replay_status="CANONICALIZED",
+            replay_rejection_reasons=(),
+            analytics=backtest_module.BacktestAnalytics(
+                trade_ledger=[state.closed_trades[0]],
+                equity_curve=[],
+                cost_attribution=backtest_module.CostAttribution(0.05, 0.02, 0.1, 0.17, 1.0, 0.9),
+                performance_summary=backtest_module.PerformanceSummary(
+                    gross_pnl=1.0,
+                    execution_costs=0.17,
+                    net_pnl=0.9,
+                    roi=0.0,
+                    trade_count=1,
+                    winning_trades=1,
+                    losing_trades=0,
+                    win_rate=1.0,
+                    average_win=0.0,
+                    average_loss=0.0,
+                    expectancy=0.0,
+                    profit_factor=0.0,
+                    max_drawdown=0.0,
+                    current_drawdown=0.0,
+                    current_drawdown_pct=0.0,
+                    consecutive_losses=0,
+                    average_holding_time_seconds=30.0,
+                ),
+                run_metadata=backtest_module.RunMetadata(
+                    dataset_id="dataset-123",
+                    event_count=1,
+                    first_event_time_utc="2025-01-01T12:00:00Z",
+                    last_event_time_utc="2025-01-01T12:00:30Z",
+                    strategy_configuration={},
+                    risk_configuration={},
+                    execution_configuration={},
+                    fee_configuration={},
+                    spread_configuration={},
+                    slippage_configuration={},
+                    latency_configuration={},
+                    run_signature="sig-123",
+                ),
+            ),
+        )
+
+        evidence_dir = engine.export_backtest_evidence(result, output_root=tempfile.mkdtemp(prefix="evidence_test_"))
+        with (evidence_dir / "trade_ledger.csv").open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["holding_time_seconds"], "30.0")
+        self.assertEqual(rows[0]["close_reason"], "strategy_exit_max_hold")
+        self.assertEqual(rows[0]["entry_reason"], "entry_condition_satisfied")
+
+    def test_export_backtest_evidence_fails_on_missing_required_provenance(self):
+        engine = BacktestEngine(BacktestConfig())
+        result = backtest_module.BacktestResult(
+            run_id="run-456",
+            dataset_id="dataset-456",
+            market="BTC-EUR",
+            event_start_utc="2025-01-01T12:00:00Z",
+            event_end_utc="2025-01-01T12:00:30Z",
+            repository_revision=None,
+            strategy_configuration={},
+            risk_configuration={},
+            execution_configuration={},
+            fee_configuration={},
+            spread_configuration={},
+            slippage_configuration={},
+            latency_configuration={},
+            initial_capital=1000.0,
+            final_cash=1000.0,
+            final_position_quantity=0.0,
+            final_equity=1000.0,
+            realized_pnl=0.0,
+            trade_records=[],
+            equity_curve=[],
+            metrics={"trade_count": 1, "net_pnl": 0.0},
+            warnings=[],
+            limitations=[],
+            validation_status="PASS",
+            observed_assumptions={"backtest_evidence_dir": "reports/backtests/run-456"},
+            modeled_assumptions={},
+            replay_status="CANONICALIZED",
+            replay_rejection_reasons=(),
+            analytics=backtest_module.BacktestAnalytics(
+                trade_ledger=[{
+                    "trade_id": "trade-1",
+                    "side": "SELL",
+                    "entry_timestamp_utc": "2025-01-01T12:00:00Z",
+                    "exit_timestamp_utc": "2025-01-01T12:00:30Z",
+                    "entry_price": 100.0,
+                    "exit_price": 101.0,
+                    "quantity": 1.0,
+                    "gross_pnl": 1.0,
+                    "fees": 0.1,
+                    "spread_impact": 0.05,
+                    "slippage_impact": 0.02,
+                    "net_pnl": 0.9,
+                    "holding_time_seconds": 30.0,
+                    "signal": "EXIT_LONG",
+                    "confidence": 0.8,
+                    "status": "CLOSED",
+                }],
+                equity_curve=[],
+                cost_attribution=backtest_module.CostAttribution(0.05, 0.02, 0.1, 0.17, 1.0, 0.9),
+                performance_summary=backtest_module.PerformanceSummary(
+                    gross_pnl=1.0,
+                    execution_costs=0.17,
+                    net_pnl=0.9,
+                    roi=0.0,
+                    trade_count=1,
+                    winning_trades=1,
+                    losing_trades=0,
+                    win_rate=1.0,
+                    average_win=0.0,
+                    average_loss=0.0,
+                    expectancy=0.0,
+                    profit_factor=0.0,
+                    max_drawdown=0.0,
+                    current_drawdown=0.0,
+                    current_drawdown_pct=0.0,
+                    consecutive_losses=0,
+                    average_holding_time_seconds=30.0,
+                ),
+                run_metadata=backtest_module.RunMetadata(
+                    dataset_id="dataset-456",
+                    event_count=1,
+                    first_event_time_utc="2025-01-01T12:00:00Z",
+                    last_event_time_utc="2025-01-01T12:00:30Z",
+                    strategy_configuration={},
+                    risk_configuration={},
+                    execution_configuration={},
+                    fee_configuration={},
+                    spread_configuration={},
+                    slippage_configuration={},
+                    latency_configuration={},
+                    run_signature="sig-456",
+                ),
+            ),
+        )
+
+        with self.assertRaises(ValueError):
+            engine.export_backtest_evidence(result, output_root=tempfile.mkdtemp(prefix="evidence_missing_"))
 
     def test_step_8_4_equity_curve_is_chronological(self):
         result = BacktestEngine(BacktestConfig()).run(self._fixture_events())
@@ -641,6 +889,39 @@ class BacktestEngineTests(unittest.TestCase):
 
             self.assertEqual(len(strategy_rows), 2)
             self.assertEqual(len(risk_rows), 2)
+
+    def test_backtest_evidence_bundle_is_created_with_manifest_summary_and_deterministic_identity(self):
+        cfg = BacktestConfig(initial_capital=1000.0)
+        run_root = Path(tempfile.mkdtemp(prefix="evidence_test_")) / "reports" / "backtests"
+        result = BacktestEngine(cfg).run(self._fixture_events())
+        evidence_dir = result.observed_assumptions["backtest_evidence_dir"]
+        bundle_path = Path(evidence_dir)
+
+        self.assertTrue(bundle_path.exists())
+        self.assertTrue((bundle_path / "manifest.json").exists())
+        self.assertTrue((bundle_path / "summary.json").exists())
+        self.assertTrue((bundle_path / "trade_ledger.csv").exists())
+
+        manifest = __import__("json").loads((bundle_path / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["run_id"], result.run_id)
+        self.assertEqual(manifest["run_signature"], result.run_id)
+        self.assertEqual(manifest["configuration_identity"], BacktestEngine(cfg)._config_identity())
+
+        with (bundle_path / "trade_ledger.csv").open("r", encoding="utf-8", newline="") as handle:
+            csv_rows = list(csv.DictReader(handle))
+        self.assertGreaterEqual(len(csv_rows), 0)
+        self.assertNotIn("tmp", manifest["configuration_identity"])
+        self.assertNotIn("generated_at", json.dumps(manifest, sort_keys=True))
+
+    def test_backtest_evidence_identity_ignores_temp_paths_and_is_stable_for_same_inputs(self):
+        cfg = BacktestConfig(initial_capital=1000.0)
+        first = BacktestEngine(cfg).run(self._fixture_events())
+        second = BacktestEngine(cfg).run(self._fixture_events())
+
+        self.assertEqual(first.run_id, second.run_id)
+        self.assertEqual(first.observed_assumptions["backtest_evidence_dir"], second.observed_assumptions["backtest_evidence_dir"])
+        self.assertNotIn("tmp", first.observed_assumptions["backtest_evidence_dir"])
+        self.assertNotIn("\\\\", first.observed_assumptions["backtest_evidence_dir"])
 
 
 if __name__ == "__main__":

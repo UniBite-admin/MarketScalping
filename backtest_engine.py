@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import logging
@@ -275,6 +276,144 @@ class BacktestEngine:
         self.execution_model = BacktestExecutionModel(self.config)
         self.logger = logging.getLogger("backtest_engine")
 
+    def _config_identity(self) -> str:
+        payload = {
+            "market": self.config.market,
+            "initial_capital": self.config.initial_capital,
+            "fee_rate": self.config.fee_rate,
+            "spread_pct": self.config.spread_pct,
+            "slippage_bps": self.config.slippage_bps,
+            "latency_ticks": self.config.latency_ticks,
+            "min_order_size": self.config.min_order_size,
+            "min_notional": self.config.min_notional,
+            "partial_fill_ratio": self.config.partial_fill_ratio,
+            "max_position_fraction": self.config.max_position_fraction,
+            "model_liquidity": self.config.model_liquidity,
+            "modeled_liquidity_note": self.config.modeled_liquidity_note,
+            "seed": self.config.seed,
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def export_backtest_evidence(self, result: BacktestResult, *, output_root: str | os.PathLike[str] | None = None) -> Path:
+        if not result or not getattr(result, "run_id", None):
+            raise ValueError("backtest evidence export requires a deterministic run_id")
+        if not result.dataset_id:
+            raise ValueError("backtest evidence export requires dataset_id")
+        if not result.market:
+            raise ValueError("backtest evidence export requires market")
+
+        root = Path(output_root) if output_root is not None else Path("reports") / "backtests"
+        evidence_dir = root / result.run_id
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+
+        trade_rows = []
+        trade_source = result.analytics.trade_ledger if result.analytics is not None else result.trade_records
+        for trade in trade_source:
+            trade_row = self._normalize_trade_row_for_export(trade, result)
+            trade_rows.append(trade_row)
+
+        csv_path = evidence_dir / "trade_ledger.csv"
+        fieldnames = [
+            "run_id",
+            "dataset_id",
+            "canonicalization_id",
+            "market",
+            "trade_id",
+            "execution_event_id",
+            "side",
+            "entry_timestamp_utc",
+            "exit_timestamp_utc",
+            "entry_execution_price",
+            "exit_execution_price",
+            "entry_price",
+            "exit_price",
+            "quantity",
+            "gross_pnl",
+            "fees",
+            "spread_impact",
+            "slippage_impact",
+            "net_pnl",
+            "holding_time_seconds",
+            "close_reason",
+            "signal",
+            "confidence",
+            "entry_reason",
+            "entry_signal_strength",
+            "entry_spread_pct",
+            "micro_return_1",
+            "micro_return_5",
+            "tick_interval_ms",
+            "status",
+        ]
+        with csv_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in trade_rows:
+                writer.writerow({field: row.get(field, "") for field in fieldnames})
+
+        summary_payload = {
+            "schema_version": "backtest_evidence_v1",
+            "run_id": result.run_id,
+            "dataset_id": result.dataset_id,
+            "canonicalization_id": result.dataset_id,
+            "market": result.market,
+            "window_start_utc": result.event_start_utc,
+            "window_end_utc": result.event_end_utc,
+            "summary": result.metrics,
+            "performance_summary": result.analytics.performance_summary.as_dict() if result.analytics is not None else {},
+            "cost_attribution": result.analytics.cost_attribution.as_dict() if result.analytics is not None else {},
+            "run_signature": result.run_id,
+        }
+        (evidence_dir / "summary.json").write_text(json.dumps(summary_payload, sort_keys=True, indent=2), encoding="utf-8")
+
+        manifest = {
+            "schema_version": "backtest_evidence_v1",
+            "run_id": result.run_id,
+            "dataset_id": result.dataset_id,
+            "canonicalization_id": result.dataset_id,
+            "market": result.market,
+            "window_start_utc": result.event_start_utc,
+            "window_end_utc": result.event_end_utc,
+            "configuration_identity": self._config_identity(),
+            "strategy_configuration_identity": hashlib.sha256(json.dumps(result.strategy_configuration or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+            "risk_configuration_identity": hashlib.sha256(json.dumps(result.risk_configuration or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+            "execution_configuration_identity": hashlib.sha256(json.dumps(result.execution_configuration or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+            "deterministic_seed": self.config.seed,
+            "run_signature": result.run_id,
+            "strategy_configuration": result.strategy_configuration,
+            "risk_configuration": result.risk_configuration,
+            "execution_configuration": result.execution_configuration,
+            "fee_configuration": result.fee_configuration,
+            "spread_configuration": result.spread_configuration,
+            "slippage_configuration": result.slippage_configuration,
+            "latency_configuration": result.latency_configuration,
+            "deterministic_identity": hashlib.sha256(
+                json.dumps(
+                    {
+                        "run_id": result.run_id,
+                        "dataset_id": result.dataset_id,
+                        "canonicalization_id": result.dataset_id,
+                        "market": result.market,
+                        "window_start_utc": result.event_start_utc,
+                        "window_end_utc": result.event_end_utc,
+                        "configuration_identity": self._config_identity(),
+                        "strategy_configuration": result.strategy_configuration or {},
+                        "risk_configuration": result.risk_configuration or {},
+                        "execution_configuration": result.execution_configuration or {},
+                        "fee_configuration": result.fee_configuration or {},
+                        "spread_configuration": result.spread_configuration or {},
+                        "slippage_configuration": result.slippage_configuration or {},
+                        "latency_configuration": result.latency_configuration or {},
+                        "seed": self.config.seed,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
+        (evidence_dir / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2), encoding="utf-8")
+        return evidence_dir
+
     def run(
         self,
         events: Iterable[dict],
@@ -373,32 +512,107 @@ class BacktestEngine:
                     continue
 
                 current_last = float(strategy_input.last)
-                strategy_decision = strategy_engine.evaluate(strategy_input, event_time_utc=event.event_time_utc)
+                position_state = {
+                    "open_position_exists": accounting_engine.open_position is not None,
+                    "entry_condition": accounting_engine.open_position is None,
+                    "exit_condition": accounting_engine.open_position is not None,
+                }
+                strategy_decision = self._evaluate_strategy_decision(
+                    strategy_engine,
+                    strategy_input,
+                    event_time_utc=event.event_time_utc,
+                    position_state=position_state,
+                )
                 if store_traces:
                     strategy_decisions.append(self._as_mapping(strategy_decision))
 
                 risk_state = accounting_engine.build_risk_state()
-                order_quantity = self._determine_order_quantity(current_last, state.cash, state.position_quantity)
-                candidate_position_size = max(order_quantity, 0.0)
-                candidate_entry_notional = order_quantity * current_last
-                protected_exit_value = max(candidate_entry_notional * (1.0 - max(self.config.spread_pct, 0.0)), 0.0)
-                risk_decision = risk_engine.evaluate(
-                    strategy_decision,
-                    event_time_utc=event.event_time_utc,
-                    risk_state=risk_state,
-                    candidate_position_size=candidate_position_size,
-                    candidate_entry_notional=candidate_entry_notional,
-                    protected_exit_value=protected_exit_value,
-                )
+                if strategy_decision.action == "EXIT_LONG":
+                    exit_quantity = max(float(accounting_engine.open_position.position_size), 0.0) if accounting_engine.open_position is not None else 0.0
+                    exit_reference_price = max(float(event.bid), 0.0)
+                    candidate_entry_notional = exit_quantity * exit_reference_price
+                    protected_exit_value = max(candidate_entry_notional * (1.0 - max(self.config.spread_pct, 0.0)), 0.0)
+                    risk_decision = risk_engine.evaluate(
+                        strategy_decision,
+                        event_time_utc=event.event_time_utc,
+                        risk_state=risk_state,
+                        candidate_position_size=-exit_quantity,
+                        candidate_entry_notional=candidate_entry_notional,
+                        protected_exit_value=protected_exit_value,
+                    )
+                else:
+                    order_quantity = self._determine_order_quantity(current_last, state.cash, state.position_quantity)
+                    candidate_position_size = max(order_quantity, 0.0)
+                    candidate_entry_notional = order_quantity * current_last
+                    protected_exit_value = max(candidate_entry_notional * (1.0 - max(self.config.spread_pct, 0.0)), 0.0)
+                    risk_decision = risk_engine.evaluate(
+                        strategy_decision,
+                        event_time_utc=event.event_time_utc,
+                        risk_state=risk_state,
+                        candidate_position_size=candidate_position_size,
+                        candidate_entry_notional=candidate_entry_notional,
+                        protected_exit_value=protected_exit_value,
+                    )
                 if store_traces:
                     risk_decisions.append(self._as_mapping(risk_decision))
 
-                if strategy_decision.action != "CANDIDATE_TRADE":
+                if strategy_decision.action not in {"CANDIDATE_TRADE", "ENTRY_LONG", "EXIT_LONG"}:
                     self._refresh_state_from_accounting(state, accounting_engine)
                     self._record_snapshot(state, event.event_time_utc, enabled=store_traces)
                     continue
 
                 if not risk_decision.approved:
+                    self._refresh_state_from_accounting(state, accounting_engine)
+                    self._record_snapshot(state, event.event_time_utc, enabled=store_traces)
+                    continue
+
+                if strategy_decision.action == "EXIT_LONG":
+                    order_quantity = max(float(accounting_engine.open_position.position_size), 0.0) if accounting_engine.open_position is not None else 0.0
+                    exit_reference_price = max(float(event.bid), 0.0)
+                    execution_event = execution_engine.process(risk_decision, event_time_utc=event.event_time_utc)
+                    if store_traces:
+                        execution_events.append(self._as_mapping(execution_event))
+                    if execution_event.execution_action != "SIMULATED_ORDER_PREPARED":
+                        self._refresh_state_from_accounting(state, accounting_engine)
+                        self._record_snapshot(state, event.event_time_utc, enabled=store_traces)
+                        continue
+                    outcome = self.execution_model.simulate(
+                        side="SELL",
+                        reference_price=exit_reference_price,
+                        order_quantity=order_quantity,
+                        event_time_utc=event.event_time_utc,
+                        available_cash=max(accounting_engine.available_balance, 0.0),
+                        position_quantity=max(accounting_engine.open_position.position_size, 0.0) if accounting_engine.open_position is not None else 0.0,
+                        observed_bid=event.bid,
+                        observed_ask=event.ask,
+                    )
+                    self._apply_outcome(
+                        state,
+                        outcome,
+                        event,
+                        event_index,
+                        execution_event_id=getattr(execution_event, "execution_event_id", None),
+                        strategy_name=strategy_decision.market,
+                        signal=strategy_decision.action,
+                        confidence=strategy_decision.signal_strength,
+                        close_reason=getattr(execution_event, "reason", "exit_signal"),
+                    )
+                    execution_result = accounting_engine.process_execution(
+                        execution_event,
+                        bid=event.bid,
+                        ask=event.ask,
+                        timestamp_utc=event.event_time_utc,
+                        signal=strategy_decision.action,
+                        confidence=strategy_decision.signal_strength,
+                    )
+                    accounting_decision = getattr(accounting_engine, "last_decision", None)
+                    if store_traces:
+                        accounting_decisions.append(self._as_mapping(accounting_decision) if accounting_decision is not None else {"status": "REJECTED"})
+                    if accounting_decision is not None and accounting_decision.financial_effect_applied:
+                        position_event = position_manager.process_accounting_decision(accounting_decision, event_time_utc=event.event_time_utc)
+                        if position_event is not None:
+                            if store_traces:
+                                position_events.append(self._as_mapping(position_event))
                     self._refresh_state_from_accounting(state, accounting_engine)
                     self._record_snapshot(state, event.event_time_utc, enabled=store_traces)
                     continue
@@ -435,7 +649,7 @@ class BacktestEngine:
                         if execution_event.execution_action != "SIMULATED_ORDER_PREPARED":
                             continue
                         outcome = self.execution_model.simulate(
-                            side="BUY" if strategy_decision.action == "CANDIDATE_TRADE" else "SELL",
+                            side="BUY" if strategy_decision.action in {"CANDIDATE_TRADE", "ENTRY_LONG"} else "SELL",
                             reference_price=pending["reference_price"],
                             order_quantity=pending["order_quantity"],
                             event_time_utc=pending["observation_time"],
@@ -444,7 +658,17 @@ class BacktestEngine:
                             observed_bid=event.bid,
                             observed_ask=event.ask,
                         )
-                        self._apply_outcome(state, outcome, event, event_index)
+                        self._apply_outcome(
+                            state,
+                            outcome,
+                            event,
+                            event_index,
+                            execution_event_id=getattr(execution_event, "execution_event_id", None),
+                            strategy_name=strategy_decision.market,
+                            signal=strategy_decision.action,
+                            confidence=strategy_decision.signal_strength,
+                            close_reason=getattr(execution_event, "reason", "strategy_signal"),
+                        )
                         execution_result = accounting_engine.process_execution(
                             execution_event,
                             bid=event.bid,
@@ -471,16 +695,26 @@ class BacktestEngine:
                         self._record_snapshot(state, event.event_time_utc, enabled=store_traces)
                         continue
                     outcome = self.execution_model.simulate(
-                        side="BUY" if strategy_decision.action == "CANDIDATE_TRADE" else "SELL",
-                        reference_price=current_last,
-                        order_quantity=order_quantity,
+                        side="BUY" if strategy_decision.action in {"CANDIDATE_TRADE", "ENTRY_LONG"} else "SELL",
+                        reference_price=current_last if strategy_decision.action in {"CANDIDATE_TRADE", "ENTRY_LONG"} else max(float(event.bid), 0.0),
+                        order_quantity=order_quantity if strategy_decision.action in {"CANDIDATE_TRADE", "ENTRY_LONG"} else max(float(accounting_engine.open_position.position_size), 0.0) if accounting_engine.open_position is not None else 0.0,
                         event_time_utc=event.event_time_utc,
                         available_cash=max(accounting_engine.available_balance, 0.0),
                         position_quantity=max(accounting_engine.open_position.position_size, 0.0) if accounting_engine.open_position is not None else 0.0,
                         observed_bid=event.bid,
                         observed_ask=event.ask,
                     )
-                    self._apply_outcome(state, outcome, event, event_index)
+                    self._apply_outcome(
+                        state,
+                        outcome,
+                        event,
+                        event_index,
+                        execution_event_id=getattr(execution_event, "execution_event_id", None),
+                        strategy_name=strategy_decision.market,
+                        signal=strategy_decision.action,
+                        confidence=strategy_decision.signal_strength,
+                        close_reason=getattr(execution_event, "reason", "strategy_signal"),
+                    )
                     execution_result = accounting_engine.process_execution(
                         execution_event,
                         bid=event.bid,
@@ -569,8 +803,8 @@ class BacktestEngine:
                 "trade_id": entry.get("trade_id", f"trade-{idx + 1}"),
                 "market": self.config.market,
                 "side": entry.get("side", "UNKNOWN"),
-                "entry_timestamp_utc": entry.get("open_time_utc"),
-                "exit_timestamp_utc": entry.get("close_time_utc"),
+                "entry_timestamp_utc": entry.get("entry_timestamp_utc") or entry.get("open_time_utc"),
+                "exit_timestamp_utc": entry.get("exit_timestamp_utc") or entry.get("close_time_utc"),
                 "entry_price": entry.get("entry_price", 0.0),
                 "exit_price": entry.get("exit_price", 0.0),
                 "quantity": entry.get("quantity", 0.0),
@@ -579,7 +813,16 @@ class BacktestEngine:
                 "slippage_impact": entry.get("slippage_impact", entry.get("slippage", 0.0)),
                 "fees": entry.get("fees", 0.0),
                 "net_pnl": entry.get("net_pnl", 0.0),
-                "holding_time_seconds": entry.get("holding_time_seconds", 0.0),
+                "holding_time_seconds": entry.get("holding_time_seconds", self._compute_holding_time_seconds(entry.get("entry_timestamp_utc") or entry.get("open_time_utc") or "", entry.get("exit_timestamp_utc") or entry.get("close_time_utc") or "")),
+                "close_reason": entry.get("close_reason") or entry.get("exit_reason") or "exit_signal",
+                "signal": entry.get("signal", ""),
+                "confidence": entry.get("confidence", 0.0),
+                "entry_reason": entry.get("entry_reason") or "entry_condition_satisfied",
+                "entry_signal_strength": entry.get("entry_signal_strength"),
+                "entry_spread_pct": entry.get("entry_spread_pct"),
+                "micro_return_1": entry.get("micro_return_1"),
+                "micro_return_5": entry.get("micro_return_5"),
+                "tick_interval_ms": entry.get("tick_interval_ms"),
                 "status": entry.get("status", "CLOSED"),
                 "execution_status": entry.get("status", "CLOSED"),
             }
@@ -729,7 +972,81 @@ class BacktestEngine:
             position_events=position_events,
             analytics=analytics,
         )
+        evidence_dir = self.export_backtest_evidence(result)
+        result.observed_assumptions["backtest_evidence_dir"] = str(evidence_dir)
         return result
+
+    def _normalize_trade_row_for_export(self, trade: dict[str, Any], result: BacktestResult) -> dict[str, Any]:
+        required_fields = ["trade_id", "entry_timestamp_utc", "exit_timestamp_utc", "close_reason"]
+        for field in required_fields:
+            value = trade.get(field)
+            if value in (None, "", "UNKNOWN"):
+                raise ValueError(f"missing required trade provenance for durable export: {field}")
+
+        entry_time_utc = str(trade.get("entry_timestamp_utc") or trade.get("open_time_utc") or "")
+        exit_time_utc = str(trade.get("exit_timestamp_utc") or trade.get("close_time_utc") or "")
+        if not entry_time_utc or not exit_time_utc:
+            raise ValueError(f"missing required timestamps for durable export: trade_id={trade.get('trade_id')}")
+
+        holding_seconds = trade.get("holding_time_seconds")
+        if holding_seconds in (None, ""):
+            holding_seconds = self._compute_holding_time_seconds(entry_time_utc, exit_time_utc)
+        else:
+            try:
+                holding_seconds = float(holding_seconds)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid holding_time_seconds for durable export: trade_id={trade.get('trade_id')}") from exc
+
+        close_reason = trade.get("close_reason") or trade.get("exit_reason") or trade.get("reason")
+        if close_reason in (None, ""):
+            raise ValueError(f"missing close_reason for durable export: trade_id={trade.get('trade_id')}")
+
+        entry_reason = trade.get("entry_reason")
+        if entry_reason in (None, ""):
+            raise ValueError(f"missing entry_reason for durable export: trade_id={trade.get('trade_id')}")
+
+        row = {
+            "run_id": result.run_id,
+            "dataset_id": result.dataset_id,
+            "canonicalization_id": result.dataset_id,
+            "market": trade.get("market", result.market),
+            "trade_id": trade.get("trade_id", ""),
+            "execution_event_id": trade.get("execution_event_id", ""),
+            "side": trade.get("side", "UNKNOWN"),
+            "entry_timestamp_utc": entry_time_utc,
+            "exit_timestamp_utc": exit_time_utc,
+            "entry_execution_price": trade.get("entry_execution_price", trade.get("entry_price", 0.0)),
+            "exit_execution_price": trade.get("exit_execution_price", trade.get("exit_price", 0.0)),
+            "quantity": trade.get("quantity", 0.0),
+            "gross_pnl": trade.get("gross_pnl", 0.0),
+            "fees": trade.get("fees", 0.0),
+            "spread_impact": trade.get("spread_impact", trade.get("spread_cost", 0.0)),
+            "slippage_impact": trade.get("slippage_impact", trade.get("slippage", 0.0)),
+            "net_pnl": trade.get("net_pnl", 0.0),
+            "holding_time_seconds": max(float(holding_seconds), 0.0),
+            "close_reason": close_reason,
+            "signal": trade.get("signal", ""),
+            "confidence": trade.get("confidence", 0.0),
+            "entry_reason": entry_reason,
+            "entry_signal_strength": trade.get("entry_signal_strength", trade.get("signal_strength", 0.0)),
+            "entry_spread_pct": trade.get("entry_spread_pct", trade.get("spread_pct", 0.0)),
+            "micro_return_1": trade.get("micro_return_1", 0.0),
+            "micro_return_5": trade.get("micro_return_5", 0.0),
+            "tick_interval_ms": trade.get("tick_interval_ms", 0.0),
+            "status": trade.get("status", "CLOSED"),
+            "entry_price": trade.get("entry_price", 0.0),
+            "exit_price": trade.get("exit_price", 0.0),
+        }
+        return row
+
+    @staticmethod
+    def _compute_holding_time_seconds(entry_time_utc: str, exit_time_utc: str) -> float:
+        try:
+            entry_time = datetime.fromisoformat(entry_time_utc.replace("Z", "+00:00"))
+            exit_time = datetime.fromisoformat(exit_time_utc.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"invalid ISO timestamps for holding_time_seconds: entry={entry_time_utc!r} exit={exit_time_utc!r}") from exc
+        return max((exit_time - entry_time).total_seconds(), 0.0)
 
     def _normalize_events(self, events: Iterable[dict], summary: _NormalizationSummary) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
@@ -764,6 +1081,30 @@ class BacktestEngine:
         )
         feature_engine.update(ticker_state, event_time_utc=event.event_time_utc)
         return feature_engine.get_latest_strategy_input()
+
+    def _evaluate_strategy_decision(self, strategy_engine, strategy_input, *, event_time_utc: str | None, position_state: dict) -> StrategyDecision:
+        try:
+            return strategy_engine.evaluate(
+                strategy_input,
+                event_time_utc=event_time_utc,
+                position_state=position_state,
+                exit_condition=bool(position_state.get("exit_condition", False)),
+            )
+        except TypeError:
+            legacy_decision = strategy_engine.evaluate(strategy_input, event_time_utc=event_time_utc)
+            if bool(position_state.get("open_position_exists")) and legacy_decision.action not in {"EXIT_LONG", "NO_TRADE"}:
+                return StrategyDecision(
+                    timestamp_utc=event_time_utc or "",
+                    market=strategy_input.market,
+                    action="EXIT_LONG",
+                    reason="strategy_exit_generic",
+                    signal_strength=legacy_decision.signal_strength,
+                    spread_pct=strategy_input.spread_pct,
+                    micro_return_1=strategy_input.micro_return_1,
+                    micro_return_5=strategy_input.micro_return_5,
+                    tick_interval_ms=strategy_input.tick_interval_ms,
+                )
+            return legacy_decision
 
     def _as_mapping(self, value):
         if value is None:
@@ -800,7 +1141,25 @@ class BacktestEngine:
             }
         )
 
-    def _apply_outcome(self, state: BacktestState, outcome: ExecutionOutcome, event, event_index: int) -> None:
+    def _apply_outcome(
+        self,
+        state: BacktestState,
+        outcome: ExecutionOutcome,
+        event,
+        event_index: int,
+        *,
+        execution_event_id: str | None = None,
+        strategy_name: str | None = None,
+        signal: str | None = None,
+        confidence: float | None = None,
+        close_reason: str | None = None,
+        entry_reason: str | None = None,
+        entry_signal_strength: float | None = None,
+        entry_spread_pct: float | None = None,
+        micro_return_1: float | None = None,
+        micro_return_5: float | None = None,
+        tick_interval_ms: float | None = None,
+    ) -> None:
         if not outcome.accepted:
             state.rejected_executions += 1
             return
@@ -817,6 +1176,18 @@ class BacktestEngine:
                 state.position_side = "BUY"
             if state.entry_price is None:
                 state.entry_price = outcome.execution_price
+            state.open_trade = {
+                "entry_timestamp_utc": event.event_time_utc,
+                "entry_reason": entry_reason or "entry_condition_satisfied",
+                "entry_signal_strength": entry_signal_strength,
+                "entry_spread_pct": entry_spread_pct,
+                "micro_return_1": micro_return_1,
+                "micro_return_5": micro_return_5,
+                "tick_interval_ms": tick_interval_ms,
+                "signal": signal or "ENTRY_LONG",
+                "confidence": confidence,
+                "strategy": strategy_name or self.config.market,
+            }
         elif outcome.side == "SELL":
             quantity = outcome.fill_quantity
             proceeds = outcome.notional - outcome.fees
@@ -827,30 +1198,47 @@ class BacktestEngine:
             if state.position_side == "BUY":
                 state.position_side = "SELL"
             if state.position_quantity <= 0:
+                entry_trade = state.open_trade or {}
+                entry_ts = str(entry_trade.get("entry_timestamp_utc") or event.event_time_utc)
+                exit_ts = str(event.event_time_utc)
                 realized = (outcome.execution_price - (state.entry_price or outcome.execution_price)) * quantity
                 net_pnl = realized - outcome.fees
                 state.realized_pnl += net_pnl
-                state.closed_trades.append(
-                    {
-                        "trade_id": f"trade-{len(state.closed_trades)+1}",
-                        "open_time_utc": event.event_time_utc,
-                        "close_time_utc": event.event_time_utc,
-                        "side": "SELL",
-                        "entry_price": state.entry_price or outcome.execution_price,
-                        "exit_price": outcome.execution_price,
-                        "quantity": quantity,
-                        "gross_pnl": realized,
-                        "fees": outcome.fees,
-                        "slippage": outcome.slippage_impact,
-                        "spread_impact": outcome.spread_impact,
-                        "net_pnl": net_pnl,
-                        "holding_time_seconds": 0.0,
-                        "status": "CLOSED",
-                    }
-                )
+                holding_time_seconds = self._compute_holding_time_seconds(entry_ts, exit_ts)
+                closed_trade = {
+                    "trade_id": f"trade-{len(state.closed_trades)+1}",
+                    "execution_event_id": execution_event_id,
+                    "open_time_utc": entry_ts,
+                    "close_time_utc": exit_ts,
+                    "side": "SELL",
+                    "entry_price": state.entry_price or outcome.execution_price,
+                    "exit_price": outcome.execution_price,
+                    "quantity": quantity,
+                    "gross_pnl": realized,
+                    "fees": outcome.fees,
+                    "slippage": outcome.slippage_impact,
+                    "spread_impact": outcome.spread_impact,
+                    "net_pnl": net_pnl,
+                    "holding_time_seconds": holding_time_seconds,
+                    "status": "CLOSED",
+                    "close_reason": (close_reason or entry_trade.get("exit_reason") or "exit_signal").strip() or "exit_signal",
+                    "signal": signal or "EXIT_LONG",
+                    "confidence": confidence,
+                    "strategy": strategy_name or self.config.market,
+                    "entry_timestamp_utc": entry_ts,
+                    "exit_timestamp_utc": exit_ts,
+                    "entry_reason": entry_trade.get("entry_reason") or "entry_condition_satisfied",
+                    "entry_signal_strength": entry_trade.get("entry_signal_strength"),
+                    "entry_spread_pct": entry_trade.get("entry_spread_pct"),
+                    "micro_return_1": entry_trade.get("micro_return_1"),
+                    "micro_return_5": entry_trade.get("micro_return_5"),
+                    "tick_interval_ms": entry_trade.get("tick_interval_ms"),
+                }
+                state.closed_trades.append(closed_trade)
                 state.position_quantity = 0.0
                 state.position_side = None
                 state.entry_price = None
+                state.open_trade = None
 
         state.fees_paid += outcome.fees
         state.slippage_paid += outcome.slippage_impact
