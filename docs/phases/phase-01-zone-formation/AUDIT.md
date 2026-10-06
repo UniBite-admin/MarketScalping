@@ -8,6 +8,70 @@ This audit records the approved frozen specification for Phase 1 Group A. It con
 
 The Phase 1 operational 15-minute bar contract has also received explicit human approval as the authoritative Group B input contract. This approval is separate from the Group A freeze and does not reinterpret the frozen Group A swing definition.
 
+## Final Human-Approved Freeze Record (2026-10-06)
+
+This Phase 1 scope is now explicitly frozen under human approval as of 2026-10-06.
+
+### Accepted frozen scope
+
+The repository now records the following as the accepted Phase 1 governance scope:
+
+- Group A swing definition remains frozen
+- 15-minute UTC bar contract remains frozen as the authoritative Group B input contract
+- narrow Group B tolerance-history rules remain frozen
+- narrow Group B center statistic remains frozen
+- narrow Group B membership rule remains frozen
+- narrow Group B creation rule remains frozen
+
+### Evidence boundary
+
+The maximum lifecycle-independent evidence presently accepted is:
+
+FIRST VALID ZONE → IMMEDIATE NEXT UNIQUE SAME-DIRECTION SWING → MATHEMATICAL MEMBER/NON_MEMBER/UNCLASSIFIABLE CLASSIFICATION
+
+No broader lifecycle evidence is accepted within the Phase 1 freeze.
+
+### Unresolved lifecycle boundary
+
+The following remain explicitly outside the accepted Phase 1 freeze:
+
+- active Zone identity
+- multiple Zone behavior
+- Zone persistence
+- Zone retirement
+- Zone replacement
+- Zone overlap/merge
+- member-set update semantics
+- center update after a member
+- tolerance update after a member
+- non-member transition behavior
+- candidate behavior after valid Zone creation
+- candidate/Zone coexistence
+- any later lifecycle behavior
+
+### Rejected lifecycle-independent evidence
+
+The prior counts:
+
+- HIGH: 27 valid Zone creations
+- LOW: 23 valid Zone creations
+
+remain explicitly classified as:
+
+REJECTED AS LIFECYCLE-INDEPENDENT EVIDENCE
+
+They are not accepted as part of the frozen Phase 1 evidence set.
+
+### Governance status
+
+- Phase 1 status: FROZEN / HUMAN APPROVED
+- Group B overall status: NOT FROZEN
+- Phase 2 status: NOT STARTED
+- production behavior: UNCHANGED
+- human approval date: 2026-10-06
+
+This is a governance freeze only. It does not broaden the accepted Phase 1 contract, does not implement lifecycle behavior, and does not start Phase 2.
+
 ## 1. Authoritative sources inspected
 
 - [docs/ROADMAP.md](../../ROADMAP.md) — authoritative current roadmap

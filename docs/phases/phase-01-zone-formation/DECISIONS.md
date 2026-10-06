@@ -6,6 +6,93 @@ FROZEN — HUMAN APPROVED
 
 This document records the frozen specification for Phase 1 Group A. It is not execution logic and it is not a frozen implementation. It is the approved design for the swing definition only.
 
+## Final Human-Approved Freeze Record (2026-10-06)
+
+This Phase 1 scope is now explicitly frozen under human approval as of 2026-10-06.
+
+### Accepted frozen scope
+
+The accepted Phase 1 scope is intentionally narrow and does not broaden beyond the evidence-based governance contract.
+
+- Group A swing definition remains frozen:
+  - strict swing-high definition
+  - strict swing-low definition
+  - High only for highs
+  - Low only for lows
+  - required left/right neighborhood
+  - confirmation timing
+  - eligibility timing
+  - deterministic canonical replay ordering
+  - no-lookahead behavior
+- 15-minute UTC bar contract remains frozen as the authoritative Group B input contract:
+  - 15-minute timeframe
+  - UTC aligned
+  - half-open `[bar_start, bar_end)`
+  - event exactly at `bar_end` belongs to next bar
+  - closed bars immutable
+  - incomplete trailing bar excluded
+  - empty buckets omitted
+  - Group A applied only to closed bars
+- accepted narrow Group B contract remains frozen:
+  - W = 5
+  - minimum history = 1
+  - HIGH and LOW handled separately
+  - prior same-direction legal gaps
+  - current swing excluded from its own tolerance history
+  - tolerance = median of selected prior legal gaps
+  - center = median(member prices)
+  - membership predicate: `abs(incoming_swing_price - current_zone_center) <= current_tolerance`
+  - creation rule: first eligible same-direction swing = candidate/seed; first subsequent qualifying same-direction swing = valid Zone creation
+
+### Evidence boundary
+
+The maximum lifecycle-independent evidence established by the frozen contract is:
+
+FIRST VALID ZONE → IMMEDIATE NEXT UNIQUE SAME-DIRECTION SWING → MATHEMATICAL MEMBER/NON_MEMBER/UNCLASSIFIABLE CLASSIFICATION
+
+Anything beyond that boundary is not part of the accepted Phase 1 freeze and remains outside the frozen contract.
+
+### Unresolved lifecycle boundary
+
+The following remain explicitly NOT FROZEN:
+
+- active Zone identity
+- multiple Zone behavior
+- Zone persistence
+- Zone retirement
+- Zone replacement
+- Zone overlap/merge
+- member-set update semantics
+- center update after a member
+- tolerance update after a member
+- non-member transition behavior
+- candidate behavior after valid Zone creation
+- candidate/Zone coexistence
+- any later lifecycle behavior
+
+### Rejected evidence
+
+The previous historical counts:
+
+- HIGH: 27 valid Zone creations
+- LOW: 23 valid Zone creations
+
+remain explicitly classified as:
+
+REJECTED AS LIFECYCLE-INDEPENDENT EVIDENCE
+
+These counts must not be reintroduced as accepted Phase 1 evidence.
+
+### Governance status
+
+- Phase 1 status: FROZEN / HUMAN APPROVED
+- Group B overall status: NOT FROZEN
+- Phase 2 status: NOT STARTED
+- production behavior: UNCHANGED
+- human approval date: 2026-10-06
+
+This freeze is a governance freeze only. It does not start Phase 2, does not implement unresolved lifecycle behavior, does not modify production trading code, does not modify executable tests, and does not silently broaden the Phase 1 contract.
+
 ## Additional approved governance decision
 
 The human project authority has approved the deterministic 15-minute operational bar contract for Phase 1 Group B input use, as follows:

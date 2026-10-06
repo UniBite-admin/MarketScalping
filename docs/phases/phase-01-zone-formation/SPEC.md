@@ -6,6 +6,70 @@ FROZEN — HUMAN APPROVED
 
 This specification is the frozen Phase 1 Group A swing definition. It is intentionally not runtime logic, but it is the approved and frozen specification for the swing definition itself.
 
+## Final Human-Approved Freeze Record (2026-10-06)
+
+This Phase 1 scope is now explicitly frozen under human approval as of 2026-10-06.
+
+### Accepted frozen scope
+
+The accepted Phase 1 scope is intentionally narrow and is limited to the evidence-backed governance contract currently recorded in the repository:
+
+- Group A swing definition remains frozen
+- 15-minute UTC bar contract remains frozen as the authoritative Group B input contract
+- narrow Group B tolerance-history semantics remain frozen
+- narrow Group B center statistic remains frozen
+- narrow Group B membership rule remains frozen
+- narrow Group B creation rule remains frozen
+
+### Evidence boundary
+
+The maximum lifecycle-independent evidence presently established by the repository is:
+
+FIRST VALID ZONE → IMMEDIATE NEXT UNIQUE SAME-DIRECTION SWING → MATHEMATICAL MEMBER/NON_MEMBER/UNCLASSIFIABLE CLASSIFICATION
+
+This boundary is accepted as the maximum valid Phase 1 evidence under the frozen contract. Nothing beyond this boundary is accepted as a frozen Phase 1 decision.
+
+### Unresolved lifecycle boundary
+
+The following remain explicitly NOT FROZEN:
+
+- active Zone identity
+- multiple Zone behavior
+- Zone persistence
+- Zone retirement
+- Zone replacement
+- Zone overlap/merge
+- member-set update semantics
+- center update after a member
+- tolerance update after a member
+- non-member transition behavior
+- candidate behavior after valid Zone creation
+- candidate/Zone coexistence
+- any later lifecycle behavior
+
+### Rejected lifecycle-independent evidence
+
+The earlier historical counts:
+
+- HIGH: 27 valid Zone creations
+- LOW: 23 valid Zone creations
+
+remain explicitly classified as:
+
+REJECTED AS LIFECYCLE-INDEPENDENT EVIDENCE
+
+These counts are not part of the accepted Phase 1 frozen contract.
+
+### Governance status
+
+- Phase 1 status: FROZEN / HUMAN APPROVED
+- Group B overall status: NOT FROZEN
+- Phase 2 status: NOT STARTED
+- production behavior: UNCHANGED
+- human approval date: 2026-10-06
+
+This is a governance freeze only; it does not implement unresolved lifecycle behavior, does not start Phase 2, and does not broaden the authorized Phase 1 scope.
+
 ## 1. Objective
 
 Define a deterministic and causally valid Phase 1 swing rule that can support future zone formation, touch detection, reaction validation, and confluence logic without relying on undocumented assumptions or hidden look-ahead.

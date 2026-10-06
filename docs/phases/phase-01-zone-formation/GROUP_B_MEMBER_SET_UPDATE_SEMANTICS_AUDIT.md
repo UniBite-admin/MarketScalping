@@ -403,148 +403,208 @@ So the current data is insufficient to freeze member-set update semantics.
 
 Classification: EXPERIMENTAL EVIDENCE / BLOCKED BY UNRESOLVED ROOT DECISION
 
-## 15. Required conclusions
+## 15. Bounded exploratory simulation under a single-active-seed analysis model
 
-### 1. Is append-only update semantics supported by evidence?
+This section is intentionally limited to a bounded exploratory analysis model. It is not a full sequential Zone-state specification, not project behavior, and not a frozen decision.
 
-Answer: yes, as a proposal only.
+### 15.1 Why this model is explicitly bounded
 
-Classification: PROPOSAL ONLY
+The project does not yet have a frozen specification for:
 
-### 2. Is recomputation supported by evidence?
+- Zone creation semantics beyond the approved seed/candidate + second-member creation rule
+- multiple simultaneous Zones
+- Zone identity
+- overlap handling
+- join/merge behavior
+- lifecycle/state transitions
+- member-set update semantics
 
-Answer: no.
+Because those items remain unresolved, the simulation below uses a single-active-seed analysis model only. It is an analysis convenience for inspecting the post-creation effect of a member admission under the currently frozen rules, not a claim that the repository has defined a complete Zone-state system.
 
-Classification: BLOCKED BY UNRESOLVED ROOT DECISION
+### 15.2 Exact analysis model used
 
-### 3. Is fixed-creation membership supported?
+The model respected the frozen rules already documented in the repo:
 
-Answer: no evidence supports it.
+- 15-minute UTC closed bars
+- HIGH and LOW remain separate
+- W = 5
+- minimum history = 1
+- causal prior same-direction gap history
+- current swing excluded from its own tolerance history
+- center = median(member prices)
+- membership = abs(incoming_price - current_zone_center) <= current_tolerance
+- first eligible same-direction swing = seed/candidate
+- second qualifying same-direction swing = valid Zone
 
-Classification: UNRESOLVED
+Within this single-active-seed model, the following bounded post-creation comparisons were performed for each later eligible same-direction observation:
 
-### 4. Is dynamic add/remove supported?
+- Candidate A — append-only: admit the observation, append it to the retained member set, recompute the median center
+- Candidate B — fixed creation membership: treat the observation as a qualifying member under the frozen geometry, but do not modify the Zone member set or center
 
-Answer: no.
+This is a bounded exploratory simulation under an explicitly chosen single-active-seed analysis model.
 
-Classification: BLOCKED BY UNRESOLVED ROOT DECISION
+### 15.3 Measured observations within that bounded model
 
-### 5. Which differences can actually be measured with current evidence?
+The exact results from the canonical dataset were:
 
-Answer: only conceptual differences in the abstract state model. The historical canonical data cannot distinguish the update models without a membership rule and geometry definition.
+HIGH
+- eligible swings: 78
+- bounded valid Zone count: 1
+- post-creation observations: 75
+- post-creation qualifying observations: 2
+- actual append events: 2
+- center-changed cases: 2
+- downstream A-vs-B membership divergence: 0
 
-Classification: EXPERIMENTAL EVIDENCE / BLOCKED BY UNRESOLVED ROOT DECISION
+LOW
+- eligible swings: 68
+- bounded valid Zone count: 1
+- post-creation observations: 65
+- post-creation qualifying observations: 1
+- actual append events: 1
+- center-changed cases: 1
+- downstream A-vs-B membership divergence: 0
 
-### 6. Does the frozen median center create any constraint on member-set updates?
+### 15.4 Correct interpretation of the measured results
 
-Answer: it creates a derived-value dependency, not a state-update law.
+Within this bounded exploratory model, no downstream A-vs-B membership divergence was observed.
 
-Classification: FROZEN / DERIVED VALUE
+This does not establish:
 
-### 7. Does the frozen tolerance rule create any constraint on member-set updates?
+- that Candidate A and Candidate B are equivalent under a complete sequential Zone-state model
+- that append-only membership is correct
+- that fixed-creation membership is correct
+- that member-set update semantics are frozen
+- that membership semantics are frozen
+- that a complete Zone lifecycle has been validated
 
-Answer: no direct update rule. The tolerance remains a historical derived value, separate from the member-set evolution law.
+It only establishes that, in this explicitly bounded single-active-seed analysis model, no downstream membership divergence was observed in the measured canonical suffixes.
 
-Classification: FROZEN / DERIVED VALUE
+### 15.5 Evidence vs interpretation
 
-### 8. Is member removal justified anywhere in Phase 1 evidence?
+Evidence:
 
-Answer: no.
+- the repo contains frozen Group A swing definitions
+- the repo contains a frozen 15-minute bar contract
+- the repo contains frozen tolerance-history and center rules
+- the repo contains a frozen membership rule for a valid Zone under the current narrow semantics
+- the canonical dataset yields the measured observations above
 
-Classification: BLOCKED BY UNRESOLVED ROOT DECISION
+Interpretation:
 
-### 9. What is the smallest remaining ROOT decision after this audit?
+- the observed zero-divergence result is valid only within the bounded exploratory model
+- it does not justify a freeze of member-set update semantics
+- it does not justify a freeze of broader membership semantics
+- it does not justify a Zone lifecycle specification or a full sequential Zone-state contract
 
-Answer: the exact membership rule and the exact member-set update semantics after a valid Zone already exists.
+## 16. Explicit frozen vs unresolved decision boundary
 
-Classification: BLOCKED BY UNRESOLVED ROOT DECISION
+### Established / frozen
 
-### 10. If one model is clearly the simplest defensible approach, identify it strictly as proposal only.
+- Group A swing definitions
+- 15-minute UTC bar contract
+- W = 5
+- minimum history = 1
+- tolerance = median of selected legal prior same-direction absolute gaps
+- HIGH and LOW remain separate
+- current swing excluded from its own tolerance history
+- Zone center = median(member prices)
 
-PROPOSAL ONLY — NOT FROZEN
+### Not frozen
 
-The simplest defensible approach under the current repo evidence is:
+- membership reference / distance semantics beyond the narrow approved rule
+- Zone creation / seed semantics beyond the approved creation rule
+- member-set update semantics
+- Zone identity
+- multiple simultaneous Zones
+- overlap handling
+- join / merge behavior
+- Zone geometry / width
+- Zone lifecycle / state transitions
 
-- a valid Zone exists after the proposed creation boundary
-- once a member is accepted, it is appended to the Zone member set
-- earlier members are not removed or reclassified
-- center and tolerance remain derived values from the resulting member set and historical gap stream
+Group B remains NOT FROZEN.
 
-This remains a proposal only, not a frozen decision.
+Phase 2 remains NOT STARTED.
 
-## 16. Governance classification summary
+## 17. Required conclusions
 
-- FROZEN: swing definition; 15-minute bar contract; same-direction stream separation; W=5; minimum tolerance history=1; tolerance median rule; current swing excluded from its own tolerance history; center = median(member prices)
-- REPOSITORY FACT: canonical historical stream and counts are real; the repo does not contain a production Zone state engine or authoritative member-set update rule
-- EXPERIMENTAL EVIDENCE: the historical data can show the sequence structure, but cannot distinguish update models without a membership rule
-- PROPOSAL ONLY: append-only member-set evolution after admission; minimal Zone state with candidate/valid state and member observations
-- UNRESOLVED: fixed-creation set; exact membership rule; exact update semantics; geometry; lifecycle; overlap; identity
-- BLOCKED BY UNRESOLVED ROOT DECISION: recompute semantics; dynamic add/remove semantics; any final member-set freeze
+### 1. Does the bounded exploratory simulation justify a freeze recommendation?
 
-## 17. Verification
+Answer: No.
 
-### 17.1 Production code unchanged
+The analysis is valid only as a bounded exploratory simulation under an explicitly chosen single-active-seed model. It does not establish a complete Zone-state law and does not justify freezing either membership or member-set update semantics.
 
-No production code was modified in this audit.
+### 2. Does the analysis establish append-only correctness?
 
-### 17.2 Production tests unchanged
+Answer: No.
 
-No production tests were modified in this audit.
+It does not establish append-only correctness as project behavior. It only shows that, within the bounded model, no downstream membership divergence was observed in the measured suffixes.
 
-### 17.3 Canonical data unchanged
+### 3. Does the analysis establish equivalence between Candidate A and Candidate B?
 
-No canonical data was modified in this audit.
+Answer: No.
 
-### 17.4 Frozen decisions unchanged
+It shows zero observed divergence within the bounded exploratory model only. This is not the same as proving equivalence under a complete sequential Zone-state model.
 
-The frozen decisions were preserved exactly.
+### 4. What does the analysis establish?
 
-### 17.5 Group B remains not frozen
+Answer: It establishes that, in the bounded single-active-seed model, center changes from append-only admission did not cause a downstream membership decision difference in the observed canonical suffixes.
 
-This audit does not freeze Group B.
+### 5. What does it not establish?
 
-### 17.6 Phase 2 remains not started
+Answer: It does not establish a complete Zone lifecycle, a complete Zone-state contract, or a valid frozen member-set update rule.
 
-This audit does not start Phase 2.
+## 18. Final status
 
-### 17.7 Exact verification commands
+RESEARCH ONLY — NOT FROZEN
+
+The bounded exploratory simulation under a single-active-seed analysis model is valid as a measurement exercise only. It is not evidence sufficient to freeze Zone membership semantics, member-set update semantics, or any broader Zone-state contract.
+
+## 19. Verification
+
+### 19.1 Production code unchanged
+
+No production code was modified.
+
+### 19.2 Executable tests unchanged
+
+No executable tests were modified.
+
+### 19.3 Data unchanged
+
+No dataset was modified.
+
+### 19.4 Frozen decisions unchanged
+
+The existing frozen decisions were preserved.
+
+### 19.5 Group B remains not frozen
+
+Confirmed.
+
+### 19.6 Phase 2 remains not started
+
+Confirmed.
+
+### 19.7 Exact verification commands
 
 ```powershell
-.\.venv\Scripts\python.exe -c "import json, sys; sys.path.insert(0, '.'); from tools.research.research_15m_groupb import build_reconstructed_bars; bars, highs, lows = build_reconstructed_bars(); print(json.dumps({'reconstructed_bar_count': len(bars), 'eligible_high_swings': len(highs), 'eligible_low_swings': len(lows)}, indent=2))"
+git diff --check
+git status --short --untracked-files=all
 ```
 
-```powershell
-git diff --check; Write-Host '---'; git status --short --untracked-files=all
-```
+### 19.8 Observed repository integrity result
 
-### 17.8 Evidence counts and result
+The repository is clean with respect to the intended audit cleanup:
 
-Observed output from the canonical pipeline:
-
-- reconstructed_bar_count = 1146
-- eligible_high_swings = 78
-- eligible_low_swings = 68
-
-Observed repo integrity result:
-
-- git diff --check produced no errors
-- the workspace contains unrelated existing modifications, but this audit did not modify production code, production tests, or canonical data
+- no production code changed
+- no executable tests changed
+- no dataset changed
+- no frozen governance decision changed
+- Group B remains NOT FROZEN
+- Phase 2 remains NOT STARTED
+- temporary diagnostic script was removed
 
 ## Final conclusion
 
-The repository evidence does not support freezing a member-set update law.
-
-The strongest evidence-supported state model is a proposal-only append-only update semantics after an observation has already been accepted as a member.
-
-But that conclusion is still only:
-
-PROPOSAL ONLY — NOT FROZEN
-
-The member-set update semantics remain blocked by the earlier unresolved root decisions:
-
-- exact membership rule
-- exact Zone geometry
-- exact creation semantics
-- exact lifecycle behavior
-
-Therefore the smallest remaining root decision is still the exact membership rule and the exact member-set update semantics once a valid Zone already exists.
+This cleanup preserves the measured observational results while correcting the interpretation to a clearly bounded exploratory analysis under a single-active-seed model only. The audit does not freeze any Zone-state behavior, and the repository remains in the correct research-only state.
