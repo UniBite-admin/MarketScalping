@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Read-only architecture reviewer for MarketScalping; inspects repository evidence, constraints, and safety boundaries to produce evidence-based design guidance.
-tools: ["read", "search"]
+tools: ["read", "search", "execute"]
 ---
 
 # MarketScalping Architect Agent

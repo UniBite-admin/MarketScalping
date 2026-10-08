@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: Human-facing coordinator for MarketScalping; routes work, enforces evidence-first governance, and blocks production, credential, or live-trading actions.
-tools: ["read", "search", "agent"]
+tools: ["read", "search", "agent", "execute"]
 agents: ["architect", "developer", "qa", "safety"]
 ---
 

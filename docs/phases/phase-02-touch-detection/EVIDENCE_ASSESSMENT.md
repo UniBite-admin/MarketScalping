@@ -1,8 +1,63 @@
 # Phase 2 — Evidence Assessment
 
+## Human decision record (dated 2026-10-08)
+
+Decision A — approved Phase 2 formation-state boundary.
+
+This human decision records the approved Phase 2 semantics for the first valid Zone creation event and the exact post-Zone touch semantic:
+
+- Pre-Zone state: no valid Zone exists, therefore no valid Zone center exists.
+- First post-seed formation event: the first subsequent eligible same-direction swing is accepted as the second member and creates the first valid Zone.
+- Bootstrap calculation for that event only:
+  T_boot = abs(current_swing_price - seed_price)
+- T_boot is temporary only for the formation event and is not inserted into G.
+- Current swing remains excluded from normal tolerance history.
+- Post-Zone touch semantic: once a valid Zone exists, the exact observable market event classified as a Touch is existing Zone Membership under the frozen Phase 1 membership predicate.
+- In practical terms, any later eligible observation that satisfies:
+  abs(incoming_swing_price - current_zone_center) <= current_tolerance
+  is a Zone Touch.
+- The first post-seed swing that creates the Zone is a Formation event, not a Touch.
+- The frozen Phase 1 membership rule remains the authority for post-Zone touch classification.
+
+Mandatory boundaries of Decision A:
+- This decision defines the approved post-Zone touch semantic: Existing Zone Membership is the Touch event.
+- This decision is limited to the first valid Zone formation event and the subsequent post-Zone touch classification after a valid Zone exists.
+- It does not authorize any pre-Zone membership test, temporary center, midpoint rule, interval rule, or other pre-Zone qualification rule.
+- It does not redefine or replace the frozen Phase 1 membership predicate; it preserves it as the post-Zone authority.
+- It does not define later lifecycle semantics, multiple active Zone handling, overlap/merge semantics, retirement/replacement rules, or member-update semantics.
+- Any broader touch or lifecycle interpretation remains outside the approved scope and requires a separate human decision.
+
+## Phase 2 semantic freeze
+
+The approved Phase 2 semantic boundary is:
+
+- Pre-Zone state: no valid Zone exists, therefore no valid Zone center exists.
+- First post-seed formation event: the first subsequent eligible same-direction swing is accepted as the second member and creates the first valid Zone.
+- Bootstrap calculation for that event only:
+  T_boot = abs(current_swing_price - seed_price)
+- T_boot is temporary only for the formation event and is not inserted into G.
+- Current swing remains excluded from normal tolerance history.
+- Post-Zone touch semantic: once a valid Zone exists, existing Zone Membership is the Touch event under the frozen Phase 1 membership predicate.
+- The first post-seed swing that creates the Zone is Formation only; it is not a Touch.
+
+This is intentionally narrow and preserves the frozen Phase 1 membership predicate as the authority for post-Zone touch classification.
+
+The following remain explicitly outside this approved Phase 2 decision:
+
+- bar-vs-swing touch semantics
+- touch timestamps
+- repeated touches
+- same-bar multiple touches
+- touch confirmation
+- Zone lifecycle semantics
+- multiple active Zones
+- overlap/merge
+- retirement/replacement
+- later Zone member-update semantics
+
 ## Objective
 
-This document is a research-only evidence assessment for the approved Phase 2 formation-state boundary. Its purpose is to record what the repository authoritatively supports, what remains explicitly unresolved, and where the approved Phase 2 decision ends before any later lifecycle or touch semantics are introduced.
+This document is a research-only evidence assessment for the approved Phase 2 formation-state boundary and the approved post-Zone touch semantic. Its purpose is to record what the repository authoritatively supports, what remains explicitly unresolved, and where the approved Phase 2 decision ends before any later lifecycle semantics are introduced.
 
 This assessment does not define a new touch model, a pre-zone membership rule, a lifecycle state machine, or any later Zone behavior. It preserves the frozen Phase 1 contract and the narrow Phase 2 approval without inventing semantics.
 
@@ -55,9 +110,9 @@ The repository evidence is explicit about what is and is not observed in the app
 - Phase 2 explicitly states that T_boot is temporary, single-use, and not inserted into the normal gap history G.
 - Phase 2 explicitly records that the current swing remains excluded from normal tolerance history.
 - Phase 2 explicitly rejects any claim that a temporary center, midpoint rule, interval rule, or pre-zone membership predicate is introduced.
-- The same Phase 2 documentation explicitly states that final touch semantics, touch timestamps, repeated touches, same-bar multiple touches, touch confirmation, and Zone lifecycle semantics remain outside scope.
+- The same Phase 2 documentation explicitly states that broader touch timestamps, repeated-touch policy, same-bar multiple-touch policy, touch confirmation policy, and Zone lifecycle semantics remain outside scope, while the human-approved post-Zone touch semantic is recorded separately.
 
-These are the observable repository facts. The evidence supports only the first valid Zone formation bootstrap, not any broader touch/detection model.
+These are the observable repository facts. The evidence supports the approved first valid Zone formation bootstrap and the approved post-Zone touch semantic, but it does not authorize a broader touch lifecycle model.
 
 ## Candidate classifications without silently choosing semantics
 
@@ -68,7 +123,7 @@ The following classifications are possible labels in research discussion, but th
 - First valid Zone creation event: supported and explicitly approved.
 - Pre-Zone membership test: not supported; explicitly rejected by the Phase 2 audit.
 - Temporary center / midpoint / seed-containment rule: not supported; explicitly rejected.
-- Touch event: not approved as a Phase 2 semantic classification; the documents reserve touch semantics for later work.
+- Touch event: approved as the post-Zone semantic classification; once a valid Zone exists, Existing Zone Membership is the Touch event.
 - Lifecycle event: not approved; explicitly outside the Phase 2 decision.
 
 The correct research posture is therefore: classify using the approved Phase 2 language only, and do not silently equate the bootstrap event with a later touch or lifecycle concept.
@@ -82,14 +137,13 @@ The evidence supports the following conclusions only:
 - The approved Phase 2 rule preserves the Phase 1 frozen rules and does not reinterpret them.
 - The first post-seed same-direction swing is accepted as the second member and creates the first valid Zone without applying the normal pre-Zone membership predicate.
 - The bootstrap calculation is explicitly temporary and not part of the normal gap history G.
-- The repository currently supports a precise formation-state boundary, but no final touch-detection semantics, no lifecycle semantics, and no pre-zone semantics beyond the approved bootstrap event.
+- The repository currently supports a precise formation-state boundary and an approved post-Zone touch semantic: Existing Zone Membership is the Touch event; lifecycle semantics and pre-zone semantics remain outside the approved Phase 2 boundary.
 
 ## Unsupported/unresolved semantics
 
 The following remain unsupported or explicitly unresolved by the authoritative repository evidence:
 
-- final Touch Detection semantics
-- bar-vs-swing touch semantics
+- broader bar-vs-swing touch semantics beyond the approved rule
 - touch timestamps
 - repeated touches
 - same-bar multiple touches
@@ -134,4 +188,4 @@ Without these items, any broader interpretation would be speculation rather than
 
 Human freeze readiness is: NO.
 
-Reason: the repository’s authoritative Phase 2 specification explicitly states that this is not the final Touch Detection specification and does not define unresolved Zone lifecycle semantics. The approved decision is intentionally limited to the first valid Zone creation event. It preserves the Phase 1 frozen contract but does not freeze final touch logic, lifecycle behavior, or a broader pre-zone semantic model.
+Reason: the repository currently freezes the Phase 1 geometry and the narrow bootstrap semantics, but it does not authorize a broader lifecycle or confirmation model. The approved post-Zone touch semantic is explicitly defined as Existing Zone Membership is the Touch event after a valid Zone exists, while unresolved lifecycle, timestamp, repeated-touch, and confirmation semantics remain outside the approved freeze.

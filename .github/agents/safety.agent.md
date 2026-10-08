@@ -1,7 +1,7 @@
 ---
 name: safety
 description: Safety gate for MarketScalping; reviews risky changes, blocks unsafe actions, and requires human approval for high-risk or prohibited behavior.
-tools: ["read", "search"]
+tools: ["read", "search", "execute"]
 ---
 
 Role: Safety

@@ -1,7 +1,7 @@
 ---
 name: developer
 description: Implements approved MarketScalping work in an isolated worktree under orchestrator authority while preserving safety, governance, and test requirements.
-tools: ["read", "search", "edit"]
+tools: ["read", "search", "edit", "execute"]
 ---
 
 Role: Developer
