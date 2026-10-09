@@ -1,0 +1,174 @@
+{
+  "accounting_decisions": [
+    {
+      "execution_action": "SKIPPED",
+      "execution_event_id": "2026-10-09T14:46:24.934027+00:00|BTC-EUR|NO_TRADE|NO_ACTION|no_strategy_candidate|0.0000000000|1.0000000000",
+      "financial_effect_applied": false,
+      "market": "BTC-EUR",
+      "reason": "no_strategy_candidate",
+      "signal_strength": 0.0,
+      "spread_pct": 1.0,
+      "status": "REJECTED"
+    }
+  ],
+  "authority_boundary": "read_only_evidence",
+  "configuration_identity": "66b9758fab0cf924703dfab74854ff3a7d2c99fb2b838ddea7709bece423d880",
+  "data_quality_incidents": [],
+  "data_source": "Bitvavo WebSocket",
+  "deterministic": true,
+  "evidence_lineage": {
+    "derived_from": [
+      "MarketDataEngine",
+      "StrategyEngine",
+      "RiskEngine",
+      "ExecutionEngine",
+      "AccountingEngine",
+      "PositionManager",
+      "paper_backtest_comparator"
+    ],
+    "runtime_artifacts": [
+      "C:\\Users\\akonali\\AppData\\Local\\Temp\\tmp_xilf7pj\\features.csv",
+      "C:\\Users\\akonali\\AppData\\Local\\Temp\\tmp_xilf7pj\\strategy.csv",
+      "C:\\Users\\akonali\\AppData\\Local\\Temp\\tmp_xilf7pj\\risk.csv",
+      "C:\\Users\\akonali\\AppData\\Local\\Temp\\tmp_xilf7pj\\execution.csv",
+      "C:\\Users\\akonali\\AppData\\Local\\Temp\\tmp_xilf7pj\\positions.csv",
+      "C:\\Users\\akonali\\AppData\\Local\\Temp\\tmp_xilf7pj\\trade_ledger.csv",
+      "C:\\Users\\akonali\\AppData\\Local\\Temp\\tmp_xilf7pj\\account_state.csv",
+      "C:\\Users\\akonali\\AppData\\Local\\Temp\\tmp_xilf7pj\\open_position.json"
+    ],
+    "session_root_dir": "data/paper_sessions\\017125a72bca4be8ab2bef72f16b6e63"
+  },
+  "evidence_signature": "eccb5a480f3a2f6c98095ecaa1976ff9f3440e8d83a5dafdba291fbc45be8844",
+  "execution_configuration": {
+    "enabled": true,
+    "engine": "ExecutionEngine",
+    "mode": "SIMULATED_ORDER_PREPARED"
+  },
+  "execution_events": [
+    {
+      "execution_action": "SKIPPED",
+      "execution_event_id": "2026-10-09T14:46:24.934027+00:00|BTC-EUR|NO_TRADE|NO_ACTION|no_strategy_candidate|0.0000000000|1.0000000000",
+      "market": "BTC-EUR",
+      "reason": "no_strategy_candidate",
+      "risk_action": "NO_ACTION",
+      "signal_strength": 0.0,
+      "spread_pct": 1.0,
+      "strategy_action": "NO_TRADE",
+      "timestamp_utc": "2026-10-09T14:46:24.934027+00:00"
+    }
+  ],
+  "fee_configuration": {
+    "fee_rate": 0.001
+  },
+  "fees": 0.0,
+  "final_balance": 1000.0,
+  "final_equity": 1000.0,
+  "financial_summary": {
+    "available_balance": 1000.0,
+    "cumulative_fees": 0.0,
+    "cumulative_slippage": 0.0,
+    "fees": 0.0,
+    "final_balance": 1000.0,
+    "final_equity": 1000.0,
+    "initial_balance": 1000.0,
+    "realized_pnl": 0.0,
+    "starting_balance": 1000.0,
+    "unrealized_pnl": 0.0
+  },
+  "initial_balance": 1000.0,
+  "latency_configuration": {
+    "reconnect_delay_seconds": 0.1,
+    "render_interval_seconds": 0.25,
+    "stale_after_seconds": 5.0,
+    "stale_check_interval_seconds": 1.0
+  },
+  "market": "BTC-EUR",
+  "observed_assumptions": {
+    "accounting_decision_count": 1,
+    "data_quality_incident_count": 0,
+    "disconnect_reconnect_count": 0,
+    "event_count": 0,
+    "execution_event_count": 1,
+    "first_event_time_utc": "2026-10-09T14:46:24.933731+00:00",
+    "last_event_time_utc": "2026-10-09T14:46:24.940658+00:00",
+    "market": "BTC-EUR",
+    "position_event_count": 0,
+    "recovery_reconciliation_count": 0,
+    "risk_decision_count": 1,
+    "stale_data_incident_count": 0,
+    "strategy_decision_count": 1
+  },
+  "paper_result_semantics": {
+    "backtest_result": "historical backtest artifact",
+    "comparison_result": "read-only comparison of paper_result and backtest_result",
+    "derived_paper_result_summary": "evidence bundle assembled for comparison",
+    "operational_raw_evidence": "runtime-generated event outputs and logs"
+  },
+  "paper_session_id": "017125a72bca4be8ab2bef72f16b6e63",
+  "position_events": [],
+  "position_summary": {
+    "active": false,
+    "derived_from": "AccountingEngine.open_position",
+    "entry_price": null,
+    "entry_time_utc": null,
+    "market": "BTC-EUR",
+    "position_size": null,
+    "side": null,
+    "symbol": null,
+    "trade_id": null
+  },
+  "realized_pnl": 0.0,
+  "risk_configuration": {
+    "max_candidates_per_minute": 120,
+    "max_spread_pct": 0.02,
+    "max_tick_interval_ms": 2000.0,
+    "min_signal_strength": -1.0,
+    "name": "simulation_risk",
+    "risk_identity": "simulation_risk_v1"
+  },
+  "risk_decisions": [
+    {
+      "approved": false,
+      "candidates_last_minute": 0,
+      "market": "BTC-EUR",
+      "reason": "no_strategy_candidate",
+      "risk_action": "NO_ACTION",
+      "signal_strength": 0.0,
+      "spread_pct": 1.0,
+      "strategy_action": "NO_TRADE",
+      "tick_interval_ms": null,
+      "timestamp_utc": "2026-10-09T14:46:24.934027+00:00"
+    }
+  ],
+  "session_end_utc": "2026-10-09T14:46:24.940658+00:00",
+  "session_start_utc": "2026-10-09T14:46:24.933731+00:00",
+  "slippage_configuration": {
+    "slippage_bps": 1.0
+  },
+  "source_kind": "live_runtime_session",
+  "spread_configuration": {
+    "spread_pct": 0.02
+  },
+  "status": "VALID",
+  "strategy_configuration": {
+    "max_spread_pct": 0.02,
+    "max_tick_interval_ms": 2000.0,
+    "min_momentum_return": 0.0,
+    "name": "baseline_momentum",
+    "strategy_identity": "baseline_momentum"
+  },
+  "strategy_decisions": [
+    {
+      "action": "NO_TRADE",
+      "market": "BTC-EUR",
+      "micro_return_1": null,
+      "micro_return_5": null,
+      "reason": "warmup_not_enough_momentum_history",
+      "signal_strength": 0.0,
+      "spread_pct": 1.0,
+      "tick_interval_ms": null,
+      "timestamp_utc": "2026-10-09T14:46:24.934027+00:00"
+    }
+  ],
+  "unrealized_pnl": 0.0
+}

@@ -235,14 +235,16 @@ def build_report(root: Path) -> Report:
         "Phase 1 has an explicit phase freeze record.",
         "An explicit phase-level Phase 1 freeze record was not found.",
     )
-    freeze2 = Gate(
-        "BLOCKED",
-        "A narrow Phase 2 semantic decision is recorded, but no explicit Phase 2 phase-freeze record was found.",
-        _collect(documents, (phase2[0], phase2[1]), (
-            r"HUMAN APPROVED\s*" + DASH_SEPARATOR + r"\s*PHASE 2 FORMATION-STATE DECISION",
-            r"limited to the first valid Zone formation event",
-            r"does not define later lifecycle semantics",
-        )),
+    freeze2 = _gate(
+        documents, unavailable, phase2,
+        (
+            r"Phase 2 status:\s*FROZEN\s*" + DASH_SEPARATOR + r"\s*HUMAN APPROVED",
+            r"FROZEN\s*" + DASH_SEPARATOR + r"\s*HUMAN APPROVED",
+            r'Human decision:\s*"I freeze Phase 2 based on the current evidence\."',
+        ),
+        (r"Phase 2 status:\s*NOT STARTED", r"Human freeze readiness:\s*NO"),
+        "Phase 2 has an explicit phase freeze record.",
+        "An explicit phase-level Phase 2 freeze record was not found.",
     )
     acceptance1 = _gate(
         documents, unavailable, phase1_closure,

@@ -203,6 +203,10 @@ The following remain unresolved / NOT FROZEN unless already independently frozen
 
 Group B remains NOT FROZEN overall, and Phase 2 remains NOT STARTED.
 
+## Implementation status
+
+This repository now includes a narrow runtime implementation for the frozen Phase 1 tolerance-history and membership semantics in [tools/research/phase_1_zone_runtime.py](../../../../tools/research/phase_1_zone_runtime.py). It is intentionally limited to the frozen rules already approved for the first valid Zone and will not broaden into unresolved lifecycle behavior. The implementation is verified by focused tests in [tests/test_phase_1_zone_runtime.py](../../../../tests/test_phase_1_zone_runtime.py), but it does not mark the entire Phase 1 scope as complete or frozen beyond the authoritative acceptance criteria.
+
 ## Governance note
 
 - Current authoritative roadmap: [docs/ROADMAP.md](../../ROADMAP.md)

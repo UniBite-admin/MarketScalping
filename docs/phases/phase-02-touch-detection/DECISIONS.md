@@ -2,9 +2,21 @@
 
 ## Status
 
-HUMAN APPROVED — PHASE 2 FORMATION-STATE DECISION
+FROZEN — HUMAN APPROVED
 
 This document records the Phase 2 formation-state decision and the approved post-Zone touch semantic for the first valid Zone. The first post-seed event is Formation only, and once a valid Zone exists, Existing Zone Membership is the Touch event under the frozen Phase 1 membership predicate.
+
+## Final Human-Approved Freeze Record (2026-10-09)
+
+This Phase 2 scope is now explicitly frozen under human approval as of 2026-10-09.
+
+- Phase 2 status: FROZEN / HUMAN APPROVED
+- Phase 3 status: NOT STARTED
+- human approval date: 2026-10-09
+
+Human decision: "I freeze Phase 2 based on the current evidence."
+
+This freeze is a governance freeze only. It preserves the existing acceptance record and the approved Phase 2 scope already documented here. It does not broaden Phase 2 semantics, does not modify frozen Phase 1 decisions, and does not start Phase 3.
 
 ## Human decision record (dated 2026-10-08)
 
@@ -115,6 +127,12 @@ It does not define:
 ## Phase 1 integrity
 
 All Phase 1 frozen decisions remain authoritative and unchanged. This Phase 2 decision is not a Phase 1 rewrite. It is a separate Phase 2 step that records the approved initial formation-state exception required to create the first valid Zone.
+
+## Implementation authorization
+
+Implementation is authorized for the narrow Phase 2 Touch Detection boundary only.
+This covers the approved first valid Zone formation semantics and the exact post-Zone touch classification defined in this decision.
+This does not authorize broader lifecycle work, broader Phase 2 semantics, freeze, or full Phase 2 acceptance.
 
 ## Governance note
 
