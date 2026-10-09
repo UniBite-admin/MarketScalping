@@ -10,7 +10,7 @@ This document is a research note intended to reconcile the approved Phase 2 form
 
 Decision A — approved Phase 2 formation-state boundary.
 
-This human decision records the approved Phase 2 semantics for the first valid Zone creation event only:
+This human decision records the approved Phase 2 semantics for the first valid Zone creation event and the approved post-Zone touch semantic:
 
 - Pre-Zone state: no valid Zone exists, therefore no valid Zone center exists.
 - First post-seed formation event: the first subsequent eligible same-direction swing is accepted as the second member and creates the first valid Zone.
@@ -18,15 +18,20 @@ This human decision records the approved Phase 2 semantics for the first valid Z
   T_boot = abs(current_swing_price - seed_price)
 - T_boot is temporary only for the formation event and is not inserted into G.
 - Current swing remains excluded from normal tolerance history.
-- Post-Zone state: once the Zone exists, center = median(member prices), and normal Phase 1 membership logic applies.
+- Post-Zone touch semantic: once a valid Zone exists, Existing Zone Membership is the Touch event under the frozen Phase 1 membership predicate.
+- In practical terms, any later eligible observation satisfying:
+  abs(incoming_swing_price - current_zone_center) <= current_tolerance
+  is a Zone Touch.
+- The first post-seed swing that creates the first valid Zone is Formation only, not a Touch.
+- Frozen Phase 1 membership logic remains the authority for post-Zone touch classification.
 
 Mandatory boundaries of Decision A:
-- This decision is limited to the first valid Zone formation event.
+- This decision defines the approved post-Zone touch semantic: Existing Zone Membership is the Touch event.
+- This decision is limited to the first valid Zone formation event and the subsequent post-Zone touch classification after a valid Zone exists.
 - It does not redefine or replace the frozen Phase 1 membership predicate.
 - It does not authorize any pre-Zone membership test, temporary center, midpoint rule, interval rule, or other pre-Zone qualification rule.
-- It does not define final Touch Detection semantics.
-- It does not define bar-vs-swing touch semantics, touch timestamps, repeated touches, same-bar multiple touches, touch confirmation, Zone lifecycle semantics, multiple active Zones, overlap/merge, retirement/replacement, or later Zone member-update semantics.
-- Any broader touch or lifecycle interpretation remains outside the approved scope and requires a separate human decision.
+- It does not resolve touch timestamps, repeated-touch policy, same-bar multiplicity, touch confirmation, bar-vs-swing behavior beyond the approved eligible-swing membership rule, multiple active Zones, overlap or merge, retirement or replacement, or later Zone member-update semantics.
+- Any broader timing, confirmation, lifecycle, or member-update interpretation remains outside the approved scope and requires a separate human decision.
 
 ## Phase 2 semantic freeze
 
@@ -38,7 +43,9 @@ The approved Phase 2 semantic boundary is:
   T_boot = abs(current_swing_price - seed_price)
 - T_boot is temporary only for the formation event and is not inserted into G.
 - Current swing remains excluded from normal tolerance history.
-- Post-Zone state: once the Zone exists, center = median(member prices), and normal Phase 1 membership logic applies.
+- Post-Zone touch semantic: once a valid Zone exists, Existing Zone Membership is the Touch event under the frozen Phase 1 membership predicate.
+- In practical terms, any later eligible observation satisfying abs(incoming_swing_price - current_zone_center) <= current_tolerance is a Zone Touch.
+- The first post-seed swing that creates the first valid Zone is Formation only, not Touch.
 
 This is intentionally narrow and is not a redefinition of the Phase 1 membership predicate.
 
@@ -74,9 +81,9 @@ The repository evidence supports a single, explicitly limited bootstrap event fo
   T_boot = abs(current_swing_price - seed_price)
 - T_boot is temporary, single-use, and not inserted into normal gap history G
 
-This is a formation-state rule, not a final Touch Detection model.
+This is a formation-state rule plus the approved post-Zone Touch classification, not a complete lifecycle or timing model.
 
-The repository does not authorize a broader semantic claim that the bootstrap event is already a general touch event, a bar-vs-swing touch definition, a touch confirmation mechanism, or a Zone lifecycle state. Those topics remain unresolved and explicitly outside the current Phase 2 approval.
+The repository does authorize the approved post-Zone touch semantic: once a valid Zone exists, Existing Zone Membership is the Touch event under the frozen Phase 1 membership predicate. Broader timing, repeated-touch, confirmation, and lifecycle rules remain unresolved and explicitly outside the approved Phase 2 scope.
 
 ## Authoritative evidence boundary
 
@@ -132,14 +139,16 @@ The evidence is therefore intentionally conservative and narrow: it documents th
 
 ## Research interpretation of “touch” in the current repository state
 
-The safest repository-accurate interpretation is:
+The repository-accurate interpretation is:
 
-- “touch” is not yet a final approved semantically rich construct in the Phase 2 documentation
-- the current model supports a formation boundary, not a general touch taxonomy
-- the bootstrap event is simply the approved means by which the first valid Zone is created
-- any touch-like language must be treated as descriptive only unless and until the repository defines the exact touch semantics and lifecycle rules
+- the approved post-Zone semantic is: Existing Zone Membership is the Touch event under the frozen Phase 1 membership predicate
+- a later eligible swing satisfying abs(incoming_swing_price - current_zone_center) <= current_tolerance is classified as a Zone Touch
+- the first post-seed swing that creates the first valid Zone remains Formation only, not Touch
+- the approved semantics are limited to the membership-based post-Zone Touch classification
+- broader timing, repeated-touch, same-bar multiplicity, confirmation, and lifecycle semantics remain unresolved unless separately approved
+- this document remains research-only and is not a claim of code/test implementation
 
-In other words, the current Phase 2 evidence supports a formation-state transition, not a completed touch-detection specification.
+In other words, the current Phase 2 evidence supports an approved post-Zone membership-based Touch classification plus the required bootstrap formation-state transition, while broader lifecycle and timing semantics remain outside the current approval boundary.
 
 ## Recommended model posture
 
@@ -155,13 +164,14 @@ This posture aligns with the roadmap and preserves the repository’s documented
 
 ## Conclusion
 
-The current repository evidence does not yet authorize a final touch model. It authorizes only the minimal bootstrap rule required to establish the first valid Zone under a deterministic, temporary, single-use exception.
+The current repository evidence authorizes the approved post-Zone Touch semantic: once a valid Zone exists, Existing Zone Membership is the Touch event under the frozen Phase 1 membership predicate. It also authorizes the first valid Zone bootstrap event and keeps broader timing, repeated-touch, confirmation, and lifecycle rules outside the current Phase 2 approval.
 
 That means the correct research conclusion is:
 
-- Phase 2 is not yet a final touch-detection specification
 - the bootstrap event is real and approved
-- the broader touch model remains unresolved and intentionally outside current scope
+- the post-Zone Touch rule is approved as Existing Zone Membership under the frozen Phase 1 membership predicate
+- the first post-seed swing that creates the first valid Zone is Formation only, not Touch
+- broader timing, repeated-touch, same-bar multiplicity, confirmation, and lifecycle semantics remain unresolved and intentionally outside current scope
 - any future touch semantics must be defined explicitly and approved before they can be treated as repository truth
 
 ## Boundary statement

@@ -1,0 +1,306 @@
+warning: in the working copy of 'tools/phase_runner.py', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/tools/phase_runner.py b/tools/phase_runner.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..e4dfd7d[m
+[1m--- /dev/null[m
+[1m+++ b/tools/phase_runner.py[m
+[36m@@ -0,0 +1,321 @@[m
+[32m+[m[32m"""Read-only governance and worktree report for the current roadmap phases."""[m
+[32m+[m
+[32m+[m[32mfrom __future__ import annotations[m
+[32m+[m
+[32m+[m[32mimport os[m
+[32m+[m[32mimport re[m
+[32m+[m[32mimport subprocess[m
+[32m+[m[32mimport sys[m
+[32m+[m[32mfrom dataclasses import dataclass[m
+[32m+[m[32mfrom pathlib import Path[m
+[32m+[m[32mfrom typing import Iterable, Optional, Sequence[m
+[32m+[m
+[32m+[m
+[32m+[m[32mVERSION = "0.1"[m
+[32m+[m
+[32m+[m[32mGOVERNANCE_DOCUMENTS = ([m
+[32m+[m[32m    "docs/ROADMAP.md",[m
+[32m+[m[32m    "docs/phases/phase-01-zone-formation/DECISIONS.md",[m
+[32m+[m[32m    "docs/phases/phase-01-zone-formation/SPEC.md",[m
+[32m+[m[32m    "docs/phases/phase-01-zone-formation/AUDIT.md",[m
+[32m+[m[32m    "docs/phases/phase-01-zone-formation/TEST_REQUIREMENTS.md",[m
+[32m+[m[32m    "docs/phases/phase-01-zone-formation/PHASE_1_CLOSURE_AUDIT.md",[m
+[32m+[m[32m    "docs/phases/phase-02-touch-detection/DECISIONS.md",[m
+[32m+[m[32m    "docs/phases/phase-02-touch-detection/SPEC.md",[m
+[32m+[m[32m    "docs/phases/phase-02-touch-detection/AUDIT.md",[m
+[32m+[m[32m    "docs/phases/phase-02-touch-detection/TEST_REQUIREMENTS.md",[m
+[32m+[m[32m    "docs/phases/phase-02-touch-detection/EVIDENCE_ASSESSMENT.md",[m
+[32m+[m[32m)[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@dataclass(frozen=True)[m
+[32m+[m[32mclass Evidence:[m
+[32m+[m[32m    path: str[m
+[32m+[m[32m    line: int[m
+[32m+[m[32m    heading: str[m
+[32m+[m[32m    text: str[m
+[32m+[m
+[32m+[m[32m    def reference(self) -> str:[m
+[32m+[m[32m        suffix = " > " + self.heading if self.heading else ""[m
+[32m+[m[32m        return "{}:{}{}".format(self.path, self.line, suffix)[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@dataclass(frozen=True)[m
+[32m+[m[32mclass Document:[m
+[32m+[m[32m    path: str[m
+[32m+[m[32m    text: str[m
+[32m+[m
+[32m+[m[32m    def evidence(self, patterns: Iterable[str]) -> list[Evidence]:[m
+[32m+[m[32m        compiled = [re.compile(pattern, re.IGNORECASE) for pattern in patterns][m
+[32m+[m[32m        results: list[Evidence] = [][m
+[32m+[m[32m        heading = ""[m
+[32m+[m[32m        for number, line in enumerate(self.text.splitlines(), 1):[m
+[32m+[m[32m            if line.lstrip().startswith("#"):[m
+[32m+[m[32m                heading = line.lstrip("# ").strip()[m
+[32m+[m[32m            if any(pattern.search(line) for pattern in compiled):[m
+[32m+[m[32m                results.append(Evidence(self.path, number, heading, line.strip()[:240]))[m
+[32m+[m[32m        return results[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@dataclass(frozen=True)[m
+[32m+[m[32mclass Gate:[m
+[32m+[m[32m    status: str[m
+[32m+[m[32m    explanation: str[m
+[32m+[m[32m    evidence: tuple[Evidence, ...] = ()[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@dataclass(frozen=True)[m
+[32m+[m[32mclass GitState:[m
+[32m+[m[32m    staged: tuple[str, ...] = ()[m
+[32m+[m[32m    unstaged: tuple[str, ...] = ()[m
+[32m+[m[32m    untracked: tuple[str, ...] = ()[m
+[32m+[m[32m    error: Optional[str] = None[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@dataclass(frozen=True)[m
+[32m+[m[32mclass Report:[m
+[32m+[m[32m    gates: dict[str, dict[str, Gate]][m
+[32m+[m[32m    git: GitState[m
+[32m+[m[32m    missing_documents: tuple[str, ...][m
+[32m+[m[32m    read_errors: tuple[str, ...][m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _deduplicate(evidence: Iterable[Evidence]) -> tuple[Evidence, ...]:[m
+[32m+[m[32m    seen: set[tuple[str, int]] = set()[m
+[32m+[m[32m    unique: list[Evidence] = [][m
+[32m+[m[32m    for item in evidence:[m
+[32m+[m[32m        key = (item.path, item.line)[m
+[32m+[m[32m        if key not in seen:[m
+[32m+[m[32m            seen.add(key)[m
+[32m+[m[32m            unique.append(item)[m
+[32m+[m[32m    return tuple(unique)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _collect(documents: dict[str, Document], paths: Sequence[str], patterns: Iterable[str]) -> tuple[Evidence, ...]:[m
+[32m+[m[32m    found: list[Evidence] = [][m
+[32m+[m[32m    for path in paths:[m
+[32m+[m[32m        document = documents.get(path)[m
+[32m+[m[32m        if document is not None:[m
+[32m+[m[32m            found.extend(document.evidence(patterns))[m
+[32m+[m[32m    return _deduplicate(found)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _gate([m
+[32m+[m[32m    documents: dict[str, Document],[m
+[32m+[m[32m    missing: Sequence[str],[m
+[32m+[m[32m    paths: Sequence[str],[m
+[32m+[m[32m    positive_patterns: Sequence[str],[m
+[32m+[m[32m    negative_patterns: Sequence[str],[m
+[32m+[m[32m    description: str,[m
+[32m+[m[32m    not_established: str,[m
+[32m+[m[32m) -> Gate:[m
+[32m+[m[32m    relevant_missing = tuple(path for path in paths if path in missing)[m
+[32m+[m[32m    positive = _collect(documents, paths, positive_patterns)[m
+[32m+[m[32m    negative = _collect(documents, paths, negative_patterns)[m
+[32m+[m[32m    if relevant_missing:[m
+[32m+[m[32m        return Gate([m
+[32m+[m[32m            "BLOCKED",[m
+[32m+[m[32m            "Required governance evidence is missing: {}.".format(", ".join(relevant_missing)),[m
+[32m+[m[32m            _deduplicate((*positive, *negative)),[m
+[32m+[m[32m        )[m
+[32m+[m[32m    if positive and negative:[m
+[32m+[m[32m        return Gate([m
+[32m+[m[32m            "BLOCKED",[m
+[32m+[m[32m            "Governance evidence is contradictory; the runner does not choose a permissive interpretation.",[m
+[32m+[m[32m            _deduplicate((*positive, *negative)),[m
+[32m+[m[32m        )[m
+[32m+[m[32m    if negative:[m
+[32m+[m[32m        return Gate("BLOCKED", description, negative)[m
+[32m+[m[32m    if positive:[m
+[32m+[m[32m        return Gate("SUPPORTED", description, positive)[m
+[32m+[m[32m    return Gate("BLOCKED", not_established)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef read_documents(root: Path) -> tuple[dict[str, Document], tuple[str, ...], tuple[str, ...]]:[m
+[32m+[m[32m    documents: dict[str, Document] = {}[m
+[32m+[m[32m    missing: list[str] = [][m
+[32m+[m[32m    errors: list[str] = [][m
+[32m+[m[32m    for relative_path in GOVERNANCE_DOCUMENTS:[m
+[32m+[m[32m        path = root / Path(relative_path)[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            text = path.read_text(encoding="utf-8")[m
+[32m+[m[32m        except FileNotFoundError:[m
+[32m+[m[32m            missing.append(relative_path)[m
+[32m+[m[32m        except (OSError, UnicodeError) as exc:[m
+[32m+[m[32m            errors.append("{}: {}".format(relative_path, exc))[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            documents[relative_path] = Document(relative_path, text)[m
+[32m+[m[32m    return documents, tuple(missing), tuple(errors)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef read_git_state(root: Path) -> GitState:[m
+[32m+[m[32m    environment = os.environ.copy()[m
+[32m+[m[32m    environment["GIT_OPTIONAL_LOCKS"] = "0"[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        result = subprocess.run([m
+[32m+[m[32m            ["git", "status", "--porcelain=v1", "--untracked-files=all"],[m
+[32m+[m[32m            cwd=str(root), capture_output=True, text=True, check=False, env=environment,[m
+[32m+[m[32m        )[m
+[32m+[m[32m    except OSError as exc:[m
+[32m+[m[32m        return GitState(error="unable to execute git status: {}".format(exc))[m
+[32m+[m[32m    if result.returncode != 0:[m
+[32m+[m[32m        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic supplied"[m
+[32m+[m[32m        return GitState(error="git status exited with code {}: {}".format(result.returncode, detail))[m
+[32m+[m
+[32m+[m[32m    staged: list[str] = [][m
+[32m+[m[32m    unstaged: list[str] = [][m
+[32m+[m[32m    untracked: list[str] = [][m
+[32m+[m[32m    for line in result.stdout.splitlines():[m
+[32m+[m[32m        if len(line) < 3:[m
+[32m+[m[32m            continue[m
+[32m+[m[32m        index_status, worktree_status = line[0], line[1][m
+[32m+[m[32m        name = line[3:][m
+[32m+[m[32m        if index_status == "?" and worktree_status == "?":[m
+[32m+[m[32m            untracked.append(name)[m
+[32m+[m[32m            continue[m
+[32m+[m[32m        if index_status != " ":[m
+[32m+[m[32m            staged.append(name)[m
+[32m+[m[32m        if worktree_status != " ":[m
+[32m+[m[32m            unstaged.append(name)[m
+[32m+[m[32m    return GitState(tuple(staged), tuple(unstaged), tuple(untracked))[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef build_report(root: Path) -> Report:[m
+[32m+[m[32m    documents, missing, read_errors = read_documents(root)[m
+[32m+[m[32m    roadmap = ("docs/ROADMAP.md",)[m
+[32m+[m[32m    phase1 = ([m
+[32m+[m[32m        "docs/phases/phase-01-zone-formation/DECISIONS.md",[m
+[32m+[m[32m        "docs/phases/phase-01-zone-formation/SPEC.md",[m
+[32m+[m[32m        "docs/phases/phase-01-zone-formation/AUDIT.md",[m
+[32m+[m[32m        "docs/phases/phase-01-zone-formation/TEST_REQUIREMENTS.md",[m
+[32m+[m[32m    )[m
+[32m+[m[32m    phase1_closure = ("docs/phases/phase-01-zone-formation/PHASE_1_CLOSURE_AUDIT.md",)[m
+[32m+[m[32m    phase2 = ([m
+[32m+[m[32m        "docs/phases/phase-02-touch-detection/DECISIONS.md",[m
+[32m+[m[32m        "docs/phases/phase-02-touch-detection/SPEC.md",[m
+[32m+[m[32m        "docs/phases/phase-02-touch-detection/AUDIT.md",[m
+[32m+[m[32m        "docs/phases/phase-02-touch-detection/TEST_REQUIREMENTS.md",[m
+[32m+[m[32m        "docs/phases/phase-02-touch-detection/EVIDENCE_ASSESSMENT.md",[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    narrow1 = _gate([m
+[32m+[m[32m        documents, missing, (phase1[0],),[m
+[32m+[m[32m        (r"FROZEN\s*[—-]\s*HUMAN APPROVED", r"human project authority has explicitly approved"),[m
+[32m+[m[32m        (),[m
+[32m+[m[32m        "Narrow Phase 1 decision approval is recorded; this covers only the stated decision scopes.",[m
+[32m+[m[32m        "No explicit narrow Phase 1 human approval was found.",[m
+[32m+[m[32m    )[m
+[32m+[m[32m    narrow2 = _gate([m
+[32m+[m[32m        documents, missing, phase2,[m
+[32m+[m[32m        (r"HUMAN APPROVED\s*[—-]\s*PHASE 2 FORMATION-STATE DECISION", r"Decision A\s*[—-]\s*approved"),[m
+[32m+[m[32m        (r"Decision A\s*[—-]\s*not approved",),[m
+[32m+[m[32m        "The narrow Phase 2 formation-state/touch decision is approved; that does not establish phase freeze, acceptance, or implementation permission.",[m
+[32m+[m[32m        "No explicit narrow Phase 2 decision approval was found.",[m
+[32m+[m[32m    )[m
+[32m+[m[32m    freeze1 = _gate([m
+[32m+[m[32m        documents, missing, (phase1[0],),[m
+[32m+[m[32m        (r"Phase 1 status:\s*FROZEN\s*/\s*HUMAN APPROVED",),[m
+[32m+[m[32m        (r"Phase 1 status:\s*NOT FROZEN",),[m
+[32m+[m[32m        "Phase 1 has an explicit phase freeze record.",[m
+[32m+[m[32m        "An explicit phase-level Phase 1 freeze record was not found.",[m
+[32m+[m[32m    )[m
+[32m+[m[32m    freeze2 = Gate([m
+[32m+[m[32m        "BLOCKED",[m
+[32m+[m[32m        "A narrow Phase 2 semantic decision is recorded, but no explicit Phase 2 phase-freeze record was found.",[m
+[32m+[m[32m        _collect(documents, (phase2[0], phase2[1]), ([m
+[32m+[m[32m            r"HUMAN APPROVED\s*[—-]\s*PHASE 2 FORMATION-STATE DECISION",[m
+[32m+[m[32m            r"limited to the first valid Zone formation event",[m
+[32m+[m[32m            r"does not define later lifecycle semantics",[m
+[32m+[m[32m        )),[m
+[32m+[m[32m    )[m
+[32m+[m[32m    acceptance1 = _gate([m
+[32m+[m[32m        documents, missing, phase1_closure,[m
+[32m+[m[32m        ([m
+[32m+[m[32m            r"Phase 1\s+(?:is\s+)?fully accepted",[m
+[32m+[m[32m            r"final Phase 1 acceptance:\s*ACCEPTED",[m
+[32m+[m[32m            r"Phase 1 satisfies its authoritative acceptance requirements",[m
+[32m+[m[32m            r"Phase 1 contract:\s*accepted as documented",[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        (r"final human approval is still required", r"READY FOR HUMAN FREEZE", r"READY FOR HUMAN FREEZE\s+ONLY"),[m
+[32m+[m[32m        "Phase 1 full acceptance is explicitly recorded.",[m
+[32m+[m[32m        "The closure evidence does not establish unambiguous full Phase 1 acceptance.",[m
+[32m+[m[32m    )[m
+[32m+[m[32m    acceptance2 = _gate([m
+[32m+[m[32m        documents, missing, (roadmap[0],) + phase2,[m
+[32m+[m[32m        ([m
+[32m+[m[32m            r"Phase 2 (?:full phase )?acceptance:\s*ACCEPTED",[m
+[32m+[m[32m            r"Phase 2 has been explicitly accepted",[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        (r"Phase 2 status:\s*NOT STARTED", r"Human freeze readiness:\s*NO"),[m
+[32m+[m[32m        "Full Phase 2 acceptance is explicitly recorded.",[m
+[32m+[m[32m        "No explicit full Phase 2 acceptance is recorded; narrow decision approval and test requirements do not establish full phase acceptance.",[m
+[32m+[m[32m    )[m
+[32m+[m[32m    implementation = _gate([m
+[32m+[m[32m        documents, missing, (roadmap[0], phase1[0], phase2[0]),[m
+[32m+[m[32m        (r"implementation\s+(?:is\s+)?authorized", r"authorized\s+to\s+implement"),[m
+[32m+[m[32m        (r"does not authorize implementation", r"does not authorize production implementation", r"implementation must not begin until"),[m
+[32m+[m[32m        "An explicit implementation authorization is recorded.",[m
+[32m+[m[32m        "No explicit implementation authorization was found; narrow approval or freeze is not treated as authorization.",[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    gates = {[m
+[32m+[m[32m        "Phase 1": {[m
+[32m+[m[32m            "Narrow decision approval": narrow1,[m
+[32m+[m[32m            "Phase freeze": freeze1,[m
+[32m+[m[32m            "Full phase acceptance": acceptance1,[m
+[32m+[m[32m            "Implementation authorization": implementation,[m
+[32m+[m[32m        },[m
+[32m+[m[32m        "Phase 2": {[m
+[32m+[m[32m            "Narrow decision approval": narrow2,[m
+[32m+[m[32m            "Phase freeze": freeze2,[m
+[32m+[m[32m            "Full phase acceptance": acceptance2,[m
+[32m+[m[32m            "Implementation authorization": implementation,[m
+[32m+[m[32m        },[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return Report(gates, read_git_state(root), missing, read_errors)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _format_evidence(evidence: Sequence[Evidence]) -> list[str]:[m
+[32m+[m[32m    return ["  - `{}` — {}".format(item.reference(), item.text) for item in evidence][m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef render_report(report: Report) -> str:[m
+[32m+[m[32m    lines = ["# MarketScalping Phase Runner v{}".format(VERSION), ""][m
+[32m+[m[32m    if report.missing_documents:[m
+[32m+[m[32m        lines.extend(["## Missing governance documents", ""])[m
+[32m+[m[32m        lines.extend("- `{}`".format(path) for path in report.missing_documents)[m
+[32m+[m[32m        lines.append("")[m
+[32m+[m[32m    if report.read_errors:[m
+[32m+[m[32m        lines.extend(["## Document read errors", ""])[m
+[32m+[m[32m        lines.extend("- {}".format(error) for error in report.read_errors)[m
+[32m+[m[32m        lines.append("")[m
+[32m+[m
+[32m+[m[32m    lines.extend(["## Governance gates", ""])[m
+[32m+[m[32m    for phase, phase_gates in report.gates.items():[m
+[32m+[m[32m        lines.extend(["### {}".format(phase), ""])[m
+[32m+[m[32m        for name, gate in phase_gates.items():[m
+[32m+[m[32m            lines.append("- **{}: {}** — {}".format(name, gate.status, gate.explanation))[m
+[32m+[m[32m            lines.extend(_format_evidence(gate.evidence))[m
+[32m+[m[3
